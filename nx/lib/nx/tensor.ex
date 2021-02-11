@@ -83,7 +83,7 @@ defmodule Nx.Tensor do
       [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift] ++
       [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal] ++
       [:logical_and, :logical_or, :logical_xor] ++
-      [:outer]
+      [:outer, :int_divide]
 
   for binary_op <- binary_ops do
     @callback unquote(binary_op)(out :: t, t, t) :: t

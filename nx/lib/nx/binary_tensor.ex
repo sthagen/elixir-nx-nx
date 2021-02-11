@@ -504,7 +504,7 @@ defmodule Nx.BinaryTensor do
         [:add, :subtract, :multiply, :power, :remainder, :divide, :arctan2, :min, :max] ++
           [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift] ++
           [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal] ++
-          [:logical_and, :logical_or, :logical_xor] do
+          [:logical_and, :logical_or, :logical_xor, :int_divide] do
     capture = Macro.var(:"element_#{fun}", __MODULE__)
 
     @impl true
@@ -575,6 +575,7 @@ defmodule Nx.BinaryTensor do
   defp element_subtract(_, a, b), do: a - b
   defp element_multiply(_, a, b), do: a * b
   defp element_divide(_, a, b), do: a / b
+  defp element_int_divide(_, a, b), do: div(a, b)
   defp element_arctan2(_, a, b), do: :math.atan2(a, b)
   defp element_max(_, a, b), do: :erlang.max(a, b)
   defp element_min(_, a, b), do: :erlang.min(a, b)

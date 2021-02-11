@@ -968,6 +968,14 @@ defmodule Nx.Defn.GradTest do
         grad_reduce(3)
       end
     end
+
+    defn grad_int_divide(t), do: grad(t, Nx.int_divide(t, 2))
+
+    test "raises on int_divide" do
+      assert_raise ArgumentError, ~r"cannot compute gradient for Nx.int_divide/2", fn ->
+        grad_int_divide(2)
+      end
+    end
   end
 
   # We need to round the floats because of imprecision between platforms

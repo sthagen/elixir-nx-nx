@@ -438,7 +438,7 @@ defmodule Nx.Defn.Expr do
       [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift] ++
       [:equal, :not_equal, :greater, :less, :less_equal, :greater_equal] ++
       [:logical_and, :logical_or, :logical_xor] ++
-      [:outer]
+      [:outer, :int_divide]
 
   for op <- binary_ops do
     @impl true
