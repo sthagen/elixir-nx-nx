@@ -32,102 +32,65 @@ defmodule EXLA.Defn do
 
   @doc false
   def __aot__(key, vars, fun, options) do
-    builder = EXLA.Builder.new(inspect(key))
-
+    {fun, _expr_options, exla_options} = prepare_args(fun, options)
     expr = fun.(vars)
 
-    params_and_vars =
+    shapes_and_args =
       for {%{shape: shape, type: type}, i} <- Enum.with_index(vars) do
-        exla_shape = EXLA.Shape.make_shape(type, shape)
-        {EXLA.Op.parameter(builder, i, exla_shape, "p#{i}"), %{id: i, name: "p#{i}", dims: shape, type: type}}
+        {EXLA.Shape.make_shape(type, shape), %{id: i, name: "p#{i}", dims: shape, type: type}}
       end
 
-    {params, vars} = Enum.unzip(params_and_vars)
+    {shapes, args} = Enum.unzip(shapes_and_args)
+    computation = to_root_computation(key, expr, shapes, exla_options)
 
-    state = %{
-      precision: Keyword.get(options, :precision, :default),
-      builder: builder,
-      params: params
-    }
+    %EXLA.Shape{dtype: {:t, shapes}} = computation.output_shape
 
-    final_op =
-      expr
-      |> to_result(state, %{})
-      |> elem(0)
-
-    output = EXLA.Op.tuple(builder, [final_op])
-    computation = EXLA.Builder.build(output)
-
-    %EXLA.Shape{dtype: {:t, [output_shape]}} = computation.output_shape
-
-    shapes =
-      case output_shape.dtype do
-        {:t, many} -> many
-        _ -> [output_shape]
-      end
-
-    total_size =
+    total_sizes =
       Enum.map(shapes, fn shape ->
         {_, size} = shape.dtype
         Nx.size(shape.dims) * div(size, 8)
       end)
-      |> Enum.sum()
 
     fun_info = :erlang.fun_info(key)
 
     EXLA.AOT.Compiler.compile(
       [computation],
-      [{fun_info[:name], fun_info[:arity], vars, total_size}],
+      [{fun_info[:name], fun_info[:arity], args, total_sizes}],
       fun_info[:module]
     )
   end
 
-  defp compile(key, vars, fun, options) do
+  defp prepare_args(fun, options) do
     {expr_options, exla_options} =
       Keyword.split(options, [:max_float_type, :max_signed_type, :max_unsigned_type])
 
     expr_options = Keyword.put_new(expr_options, :max_float_type, {:f, 32})
+    fun = fn vars -> vars |> fun.() |> Expr.rewrite_types(expr_options) end
+    {fun, expr_options, exla_options}
+  end
+
+  defp compile(key, vars, fun, options) do
+    {fun, expr_options, exla_options} = prepare_args(fun, options)
     expr_args = for var <- vars, do: nx_to_expr_key!(var)
     expr_key = {key, expr_args, expr_options}
 
     {expr, holes} =
       EXLA.LockedCache.run(expr_key, fn ->
-        expr = fun.(vars) |> Expr.rewrite_types(expr_options)
+        expr = fun.(vars)
         {expr, holes(expr)}
       end)
 
     # TODO: We should extract the client and device ordinal from buffers first
     # TODO: Rename :client to :default_client
-    # TODO: Client_name plus device_ordinal must be part of the cache key
     {client_name, exla_options} = Keyword.pop(exla_options, :client, :default)
     buffers = for var <- vars, do: nx_to_buffer(var)
     cache_args = for var <- vars, do: nx_to_cache_key!(var)
-    cache_key = {key, cache_args, client_name, exla_options}
+    cache_key = {key, cache_args, client_name, expr_options, exla_options}
 
     {_, executable} =
       EXLA.LockedCache.run(cache_key, fn ->
-        builder = EXLA.Builder.new(inspect(key))
-
-        # TODO: Use Enum.with_index on Elixir v1.12
-        params =
-          for {%{shape: shape}, i} <- Enum.with_index(buffers) do
-            EXLA.Op.parameter(builder, i, shape, "p#{i}")
-          end
-
-        state = %{
-          precision: Keyword.get(options, :precision, :default),
-          builder: builder,
-          params: params
-        }
-
-        expr = expr || fun.(vars)
-
-        computation =
-          expr
-          |> to_result(state, %{})
-          |> elem(0)
-          |> EXLA.Builder.build()
-
+        shapes = Enum.map(buffers, & &1.shape)
+        computation = to_root_computation(key, expr || fun.(vars), shapes, exla_options)
         client = EXLA.Client.fetch!(client_name)
         executable = EXLA.Computation.compile(computation, client, Enum.map(buffers, & &1.shape))
         :persistent_term.put(cache_key, executable)
@@ -138,41 +101,50 @@ defmodule EXLA.Defn do
   end
 
   defp holes(tuple) when is_tuple(tuple),
-    do: tuple |> Tuple.to_list() |> Enum.map(&holes/1)
+    do: {:tuple, tuple |> Tuple.to_list() |> Enum.map(&holes/1)}
 
   defp holes(%T{} = t),
     do: %{t | data: nil}
 
-  defp to_result(tuple, state, cache) when is_tuple(tuple) do
+  defp to_root_computation(key, expr, shapes, options) do
+    builder = EXLA.Builder.new(inspect(key))
+
+    # TODO: Use Enum.with_index on Elixir v1.12
+    params =
+      for {shape, i} <- Enum.with_index(shapes) do
+        EXLA.Op.parameter(builder, i, shape, "p#{i}")
+      end
+
+    state = %{
+      precision: Keyword.get(options, :precision, :default),
+      builder: builder,
+      params: params
+    }
+
+    expr
+    |> to_root_result(state, %{})
+    |> EXLA.Builder.build()
+  end
+
+  defp to_root_result(tuple_or_expr, state, cache) do
+    {acc, _cache} = to_root_result(tuple_or_expr, [], state, cache)
+    EXLA.Op.tuple(state.builder, Enum.reverse(acc))
+  end
+
+  defp to_root_result(tuple, acc, state, cache) when is_tuple(tuple) do
     list = Tuple.to_list(tuple)
 
-    if expr = full_tuple(list, tuple_size(tuple)) do
-      to_result(expr, state, cache)
-    else
-      {elements, cache} = Enum.map_reduce(list, cache, &to_result(&1, state, &2))
-      {EXLA.Op.tuple(state.builder, elements), cache}
-    end
+    Enum.reduce(list, {acc, cache}, fn expr, {acc, cache} ->
+      to_root_result(expr, acc, state, cache)
+    end)
   end
 
-  defp to_result(expr, state, cache) do
-    recur_operator(expr, state, cache)
+  defp to_root_result(expr, acc, state, cache) do
+    {expr, cache} = recur_operator(expr, state, cache)
+    {[expr | acc], cache}
   end
 
-  # If each element of the tuple is just a reference to the a parent expression,
-  # discard the tuple elements and return the parent expression.
-  defp full_tuple(list, size) do
-    with [%T{data: %Expr{op: :elem, args: args}} | rest] <- list,
-         [%T{data: %Expr{id: id}} = expr, 0, ^size] <- args,
-         true <- rest |> Enum.with_index(1) |> Enum.all?(&full_tuple?(&1, id, size)) do
-      expr
-    else
-      _ -> nil
-    end
-  end
-
-  defp full_tuple?({arg, index}, id, size) do
-    match?(%T{data: %Expr{op: :elem, args: [%T{data: %Expr{id: ^id}}, ^index, ^size]}}, arg)
-  end
+  ## Operator handling
 
   defp recur_operator(%T{data: %Expr{id: id, op: op}} = expr, state, cache) do
     case cache do
@@ -184,8 +156,6 @@ defmodule EXLA.Defn do
         {res, Map.put(cache, id, res)}
     end
   end
-
-  ## Handle special exprs
 
   defp cached_recur_operator(:cond, %T{data: %Expr{args: [clauses, last]}} = t, state, cache) do
     case clauses do
@@ -256,6 +226,15 @@ defmodule EXLA.Defn do
     EXLA.Lib.iota(state.builder, shape, axis)
   end
 
+  defp to_operator(:eye, [], %{type: type, shape: {n, n}}, state) do
+    iota_type = Nx.Type.merge_scalar({:u, 8}, n)
+    iota_shape = EXLA.Shape.make_shape(iota_type, {n, n})
+
+    i0 = EXLA.Op.iota(state.builder, iota_shape, 0)
+    i1 = EXLA.Op.iota(state.builder, iota_shape, 1)
+    to_type(EXLA.Op.equal(i0, i1), type)
+  end
+
   ## to_operator shape
 
   defp to_operator(:reshape, [op, shape], _ans, _state) do
@@ -299,6 +278,7 @@ defmodule EXLA.Defn do
     strides = opts[:strides]
     input_dilation = opts[:input_dilation]
     kernel_dilation = opts[:kernel_dilation]
+    groups = opts[:groups]
 
     %{type: output_type, shape: shape} = ans
     rank = tuple_size(shape)
@@ -323,6 +303,7 @@ defmodule EXLA.Defn do
       input_dilation,
       kernel_dilation,
       conv_dim_nos,
+      groups,
       state.precision
     )
   end
@@ -383,7 +364,7 @@ defmodule EXLA.Defn do
     apply(EXLA.Op, op, [to_type(left, type), to_type(right, type), dims])
   end
 
-  @bin_op [:add, :subtract, :multiply, :min, :max, :remainder, :power, :divide, :arctan2] ++
+  @bin_op [:add, :subtract, :multiply, :min, :max, :remainder, :power, :divide, :atan2] ++
             [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift]
 
   defp to_operator(op, [left, right], %{type: type}, _state) when op in @bin_op do
@@ -419,8 +400,8 @@ defmodule EXLA.Defn do
   end
 
   @unary_op [:exp, :expm1, :log, :log1p, :logistic, :cos, :sin, :tanh, :sqrt, :rsqrt, :cbrt] ++
-              [:bitwise_not, :count_leading_zeros, :population_count, :cosh, :sinh, :arccos] ++
-              [:arcsin, :arctan, :floor, :ceil, :round, :arccosh, :arcsinh, :arctanh, :erf] ++
+              [:bitwise_not, :count_leading_zeros, :population_count, :cosh, :sinh, :acos] ++
+              [:asin, :atan, :floor, :ceil, :round, :acosh, :asinh, :atanh, :erf] ++
               [:erfc, :erf_inv]
 
   defp to_operator(op, [arg], %{type: type}, _state) when op in @unary_op do
@@ -666,7 +647,7 @@ defmodule EXLA.Defn do
 
     to_computation(name, args, state, fn state ->
       expr
-      |> to_result(state, %{})
+      |> to_computation_result(state, %{})
       |> elem(0)
       |> to_type(type)
     end)
@@ -685,6 +666,39 @@ defmodule EXLA.Defn do
     state = %{state | builder: subbuilder, params: params}
     EXLA.Builder.build(fun.(state))
   end
+
+  defp to_computation_result(tuple, state, cache) when is_tuple(tuple) do
+    list = Tuple.to_list(tuple)
+
+    if expr = full_tuple(list, tuple_size(tuple)) do
+      to_computation_result(expr, state, cache)
+    else
+      {elements, cache} = Enum.map_reduce(list, cache, &to_computation_result(&1, state, &2))
+      {EXLA.Op.tuple(state.builder, elements), cache}
+    end
+  end
+
+  defp to_computation_result(expr, state, cache) do
+    recur_operator(expr, state, cache)
+  end
+
+  # If each element of the tuple is just a reference to the parent expression,
+  # discard the tuple elements and return the parent expression.
+  defp full_tuple(list, size) do
+    with [%T{data: %Expr{op: :elem, args: args}} | rest] <- list,
+         [%T{data: %Expr{id: id}} = expr, 0, ^size] <- args,
+         true <- rest |> Enum.with_index(1) |> Enum.all?(&full_tuple?(&1, id, size)) do
+      expr
+    else
+      _ -> nil
+    end
+  end
+
+  defp full_tuple?({arg, index}, id, size) do
+    match?(%T{data: %Expr{op: :elem, args: [%T{data: %Expr{id: ^id}}, ^index, ^size]}}, arg)
+  end
+
+  ## Aggregation
 
   defp to_aggregate(name, type, shape, arg, initial, opts, state, fun) do
     arg = to_type(arg, type)
@@ -730,11 +744,6 @@ defmodule EXLA.Defn do
     window_dilations = opts[:window_dilations]
 
     EXLA.Op.reduce_window(arg, acc, comp, window_dimensions, strides, window_dilations, padding)
-  end
-
-  defp subbuilder(%EXLA.Builder{name: name} = builder, desc) do
-    suffix = System.unique_integer([:positive])
-    EXLA.Builder.new(builder, name <> "-" <> desc <> "-" <> Integer.to_string(suffix))
   end
 
   ## Cond
@@ -794,7 +803,7 @@ defmodule EXLA.Defn do
 
     comp =
       expr
-      |> to_result(%{state | builder: subbuilder, params: params}, %{})
+      |> to_computation_result(%{state | builder: subbuilder, params: params}, %{})
       |> elem(0)
       |> EXLA.Builder.build()
 
@@ -844,9 +853,24 @@ defmodule EXLA.Defn do
     EXLA.Op.constant_r0(builder, constant, type)
   end
 
+  defp subbuilder(%EXLA.Builder{name: name} = builder, desc) do
+    suffix = System.unique_integer([:positive])
+    EXLA.Builder.new(builder, name <> "-" <> desc <> "-" <> Integer.to_string(suffix))
+  end
+
   ## Nx <-> EXLA.Buffer
 
-  defp buffer_to_nx(%EXLA.Buffer{shape: shape} = buffer, hole) do
+  defp buffer_to_nx(buffers, holes) do
+    {result, []} = each_buffer_to_nx(holes, buffers)
+    result
+  end
+
+  defp each_buffer_to_nx({:tuple, holes}, acc) when is_list(holes) do
+    {exprs, acc} = Enum.map_reduce(holes, acc, &each_buffer_to_nx/2)
+    {List.to_tuple(exprs), acc}
+  end
+
+  defp each_buffer_to_nx(hole, [%EXLA.Buffer{shape: shape} = buffer | acc]) do
     nx_type = to_nx_type(shape.dtype)
     nx_shape = shape.dims
 
@@ -860,15 +884,7 @@ defmodule EXLA.Defn do
               "but got #{inspect(nx_shape)}"
     end
 
-    %{hole | data: buffer_to_data(buffer)}
-  end
-
-  defp buffer_to_nx({:tuple, buffers}, holes) do
-    # TODO: Use Enum.zip_with on Elixir v1.12
-    buffers
-    |> Enum.zip(holes)
-    |> Enum.map(fn {buffer, hole} -> buffer_to_nx(buffer, hole) end)
-    |> List.to_tuple()
+    {%{hole | data: buffer_to_data(buffer)}, acc}
   end
 
   defp buffer_to_data(%EXLA.Buffer{ref: ref, data: nil}),

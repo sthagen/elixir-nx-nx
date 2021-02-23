@@ -28,7 +28,7 @@ defmodule EXLA.NIF do
     [:add, :subtract, :multiply, :divide, :remainder, :min, :max] ++
       [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift_arithmetic] ++
       [:right_shift_logical, :equal, :not_equal, :greater_equal, :greater, :less_equal] ++
-      [:less, :power, :complex, :arctan2]
+      [:less, :power, :complex, :atan2]
 
   for op <- binary_broadcast_ops do
     def unquote(op)(_a, _b, _broadcast_dims) do
@@ -38,8 +38,8 @@ defmodule EXLA.NIF do
 
   unary_ops =
     [:exp, :expm1, :log, :log1p, :logistic, :cos, :sin, :tanh, :real, :imag, :erf_inv] ++
-      [:is_finite, :conj, :arccos, :arcsin, :arctan, :cosh, :sinh, :erf, :erfc] ++
-      [:arccosh, :arcsinh, :arctanh, :sqrt, :rsqrt, :cbrt, :negate, :sign, :abs] ++
+      [:is_finite, :conj, :acos, :asin, :atan, :cosh, :sinh, :erf, :erfc] ++
+      [:acosh, :asinh, :atanh, :sqrt, :rsqrt, :cbrt, :negate, :sign, :abs] ++
       [:bitwise_not, :population_count, :count_leading_zeros, :floor, :ceil, :round]
 
   for op <- unary_ops do
@@ -62,6 +62,7 @@ defmodule EXLA.NIF do
         _lhs_dilation,
         _rhs_dilation,
         _dimension_numbers,
+        _feature_group_count,
         _precision_config
       ),
       do: nif_error(__ENV__.function)
@@ -155,6 +156,17 @@ defmodule EXLA.NIF do
 
   def cholesky(_operand), do: nif_error(__ENV__.function)
 
+  def eigh(_operand, _lower), do: nif_error(__ENV__.function)
+
+  def lu(_operand), do: nif_error(__ENV__.function)
+
+  def qr(_operand, _full_matrices, _precision_config), do: nif_error(__ENV__.function)
+
+  def svd(_a, _precision_config), do: nif_error(__ENV__.function)
+
+  def triangular_solve(_a, _b, _left_side, _lower, _unit_diagonal, _transpose_a),
+    do: nif_error(__ENV__.function)
+
   def get_host_client(_num_replicas, _intra_op_parallelism_threads),
     do: nif_error(__ENV__.function)
 
@@ -221,8 +233,15 @@ defmodule EXLA.NIF do
   def await_streams_io(_client, _buffer, _keep_on_device),
     do: nif_error(__ENV__.function)
 
-  def compile_aot(_computation, _pbtext_path, _aot_path, _function_name, _class_name, _target_triple),
-    do: nif_error(__ENV__.function)
+  def compile_aot(
+        _computation,
+        _pbtext_path,
+        _aot_path,
+        _function_name,
+        _class_name,
+        _target_triple
+      ),
+      do: nif_error(__ENV__.function)
 
   def binary_to_device_mem(_client, _binary, _shape, _device_ordinal),
     do: nif_error(__ENV__.function)

@@ -864,7 +864,7 @@ defmodule Nx.Shape do
   end
 
   @doc """
-  Returns the shape and names after a cholesky decomposition.
+  Returns the shape and names after a Cholesky decomposition.
 
   ## Examples
 
@@ -885,6 +885,32 @@ defmodule Nx.Shape do
     do: raise(ArgumentError, "tensor must be a square matrix, got shape: #{inspect({m, n})}")
 
   def cholesky(shape, _names),
+    do:
+      raise(
+        ArgumentError,
+        "tensor must have rank 2, got rank #{tuple_size(shape)} with shape #{inspect(shape)}"
+      )
+
+  def qr({m, n}, opts) when m >= n do
+    mode = opts[:mode]
+
+    case mode do
+      :reduced ->
+        {{m, n}, {n, n}}
+
+      _ ->
+        {{m, m}, {m, n}}
+    end
+  end
+
+  def qr({m, n}, _opts),
+    do:
+      raise(
+        ArgumentError,
+        "tensor must have at least as many rows as columns, got shape: #{inspect({m, n})}"
+      )
+
+  def qr(shape, _opts),
     do:
       raise(
         ArgumentError,

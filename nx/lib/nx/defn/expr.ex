@@ -22,12 +22,11 @@ defmodule Nx.Defn.Expr do
 
     * `fun(parameters, t, fun)`
 
-    * `cond(clauses, otherwise)` - note it may return tuples.
+    * `cond(clauses, otherwise)`
 
     * `elem(tuple, pos, size)` - created automatically from
-      `cond`, `fun` and `loop` when they return tuples.
-      Note it may return tuples too in case the expressions
-      above return nested tuples.
+      expression that return tuples. Note it may return tuples
+      too, which means we have nested tuples
 
   """
 
@@ -72,17 +71,14 @@ defmodule Nx.Defn.Expr do
   end
 
   @doc """
-  Creates a `cond` expression.
+  Creates a tuple, possibly recursively, by executing the
+  given function for each element.
   """
-  def cond(clauses, last) do
-    {preds, exprs} = Enum.unzip(clauses)
-    {preds, context} = to_exprs(preds)
-    [last | exprs] = cond_clauses(last, exprs)
-    clauses = Enum.zip(preds, exprs)
-    cond_result(last, context, &expr(&1, context, :cond, [clauses, last]))
+  def tuple(tuple, context, fun) when is_tuple(tuple) do
+    recur_tuple(tuple, context, fun)
   end
 
-  defp cond_result(tuple, context, fun) when is_tuple(tuple) do
+  defp recur_tuple(tuple, context, fun) when is_tuple(tuple) do
     size = tuple_size(tuple)
     expr = fun.(%T{shape: {}, names: [], type: {:tuple, size}})
 
@@ -92,12 +88,29 @@ defmodule Nx.Defn.Expr do
     |> Enum.with_index()
     |> Enum.map(fn {tensor, i} ->
       fun = &expr(&1, context, :elem, [expr, i, size])
-      cond_result(tensor, context, fun)
+      recur_tuple(tensor, context, fun)
     end)
     |> List.to_tuple()
   end
 
-  defp cond_result(tensor, _context, fun), do: fun.(tensor)
+  defp recur_tuple(tensor, _context, fun), do: fun.(tensor)
+
+  @doc """
+  Creates a `cond` expression.
+  """
+  def cond(clauses, last) do
+    {preds, exprs} = Enum.unzip(clauses)
+    {preds, context} = to_exprs(preds)
+    [last | exprs] = cond_clauses(last, exprs)
+    clauses = Enum.zip(preds, exprs)
+    fun = &expr(&1, context, :cond, [clauses, last])
+
+    if is_tuple(last) do
+      tuple(last, context, fun)
+    else
+      fun.(last)
+    end
+  end
 
   defp cond_clauses(last, exprs) when is_tuple(last) do
     size = tuple_size(last)
@@ -321,29 +334,6 @@ defmodule Nx.Defn.Expr do
   ## Nx.Defn callbacks
 
   @doc false
-  def validate_args(args) do
-    args
-    |> Enum.reduce([], &validate_args/2)
-    |> Enum.reverse()
-  end
-
-  defp validate_args(%T{} = t, acc),
-    do: [t | acc]
-
-  defp validate_args(number, acc) when is_number(number),
-    do: [Nx.tensor(number) | acc]
-
-  defp validate_args(tuple, acc) when is_tuple(tuple),
-    do: tuple |> Tuple.to_list() |> Enum.reduce(acc, &validate_args/2)
-
-  defp validate_args(other, _acc) do
-    raise(
-      ArgumentError,
-      "arguments to compiled functions must numbers, tensors, or tuples, got: #{inspect(other)}"
-    )
-  end
-
-  @doc false
   def validate_vars(vars) do
     for var <- vars do
       case var do
@@ -366,6 +356,29 @@ defmodule Nx.Defn.Expr do
                   "tagged as default arguments. Got: #{inspect(other)}"
       end
     end
+  end
+
+  @doc false
+  def to_vars(args) do
+    args
+    |> Enum.reduce([], &to_vars/2)
+    |> Enum.reverse()
+  end
+
+  defp to_vars(%T{} = t, acc),
+    do: [t | acc]
+
+  defp to_vars(number, acc) when is_number(number),
+    do: [Nx.tensor(number) | acc]
+
+  defp to_vars(tuple, acc) when is_tuple(tuple),
+    do: tuple |> Tuple.to_list() |> Enum.reduce(acc, &to_vars/2)
+
+  defp to_vars(other, _acc) do
+    raise(
+      ArgumentError,
+      "arguments to compiled functions must numbers, tensors, or tuples, got: #{inspect(other)}"
+    )
   end
 
   @doc false
@@ -440,6 +453,11 @@ defmodule Nx.Defn.Expr do
   end
 
   @impl true
+  def eye(out) do
+    expr(out, nil, :eye, [])
+  end
+
+  @impl true
   def iota(out, axis) do
     expr(out, nil, :iota, [axis])
   end
@@ -456,9 +474,9 @@ defmodule Nx.Defn.Expr do
 
   unary_ops =
     [:exp, :expm1, :log, :log1p, :logistic, :cos, :sin, :tan, :cosh, :sinh, :tanh] ++
-      [:arccosh, :arcsinh, :arctanh, :sqrt, :rsqrt, :cbrt, :negate, :sign, :abs, :bitwise_not] ++
+      [:acosh, :asinh, :atanh, :sqrt, :rsqrt, :cbrt, :negate, :sign, :abs, :bitwise_not] ++
       [:population_count, :count_leading_zeros, :floor, :ceil, :round, :as_type] ++
-      [:erf, :erfc, :arccos, :arcsin, :arctan]
+      [:erf, :erfc, :erf_inv, :acos, :asin, :atan]
 
   for op <- unary_ops do
     @impl true
@@ -469,7 +487,7 @@ defmodule Nx.Defn.Expr do
   end
 
   binary_ops =
-    [:add, :subtract, :multiply, :divide, :power, :remainder, :arctan2, :max, :min, :quotient] ++
+    [:add, :subtract, :multiply, :divide, :power, :remainder, :atan2, :max, :min, :quotient] ++
       [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift] ++
       [:equal, :not_equal, :greater, :less, :less_equal, :greater_equal] ++
       [:logical_and, :logical_or, :logical_xor] ++
@@ -673,6 +691,13 @@ defmodule Nx.Defn.Expr do
   def cholesky(out, tensor) do
     tensor = to_expr(tensor)
     expr(out, tensor.data.context, :cholesky, [tensor])
+  end
+
+  @impl true
+  def qr({q, r}, tensor, opts) do
+    tensor = to_expr(tensor)
+    context = tensor.data.context
+    tuple({q, r}, context, &expr(&1, context, :qr, [{q, r}, tensor, opts]))
   end
 
   @impl true

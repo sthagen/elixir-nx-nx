@@ -14,7 +14,7 @@ defmodule Nx.DefnTest do
   defmodule Identity do
     @behaviour Nx.Defn.Compiler
 
-    def __async__(_, _, _, _), do: raise "not implemented"
+    def __async__(_, _, _, _), do: raise("not implemented")
 
     def __jit__(key, vars, fun, _opts) do
       Process.put(__MODULE__, key)
@@ -55,7 +55,7 @@ defmodule Nx.DefnTest do
 
     test "allows pattern matching on the tuple shape with underscores" do
       assert %T{shape: {}, type: {:f, 64}, data: %Expr{op: :add, args: [left, right]}} =
-          tuple_shape_match({1, 2.0})
+               tuple_shape_match({1, 2.0})
 
       assert %T{data: %Expr{op: :parameter, args: [0]}, type: {:s, 64}} = left
       assert %T{data: %Expr{op: :parameter, args: [1]}, type: {:f, 64}} = right
@@ -152,11 +152,16 @@ defmodule Nx.DefnTest do
 
   describe "creation ops" do
     defn iota(t), do: Nx.iota(t)
+    defn eye, do: Nx.eye(2)
     defn random_uniform(t), do: Nx.random_uniform(t, 0.0, 2.0)
     defn random_normal(t), do: Nx.random_normal(t, 0.0, 1.0)
 
     test "iota" do
       assert %T{shape: {3}, data: %Expr{op: :iota, args: [nil]}} = iota(Nx.tensor([1, 2, 3]))
+    end
+
+    test "eye" do
+      assert %T{shape: {2, 2}, data: %Expr{op: :eye, args: []}} = eye()
     end
 
     test "random uniform" do
@@ -631,6 +636,17 @@ defmodule Nx.DefnTest do
     end
   end
 
+  describe "qr" do
+    defn qr(t), do: Nx.qr(t)
+
+    test "returns tuples" do
+      assert {left, right} = qr(Nx.iota({3, 2}))
+
+      assert %T{data: %Expr{op: :elem, args: [qr_expr, 0, 2]}, shape: {3, 2}} = left
+      assert %T{data: %Expr{op: :elem, args: [^qr_expr, 1, 2]}, shape: {2, 2}} = right
+    end
+  end
+
   describe "cond" do
     defn cond4(a, b, c, d) do
       cond do
@@ -740,6 +756,15 @@ defmodule Nx.DefnTest do
 
     test "reshape" do
       assert %T{shape: {3, 2}, type: {:s, 64}} = default_reshape(Nx.iota({2, 3}))
+    end
+
+    @defn_compiler Nx.Defn.Evaluator
+    defn default_qr(t), do: Nx.qr(t)
+
+    test "qr" do
+      assert {left, right} = default_qr(Nx.iota({3, 2}))
+      assert left ==  Nx.tensor([[0.0, -1.0], [1.0, 0.0], [0.0, 0.0]])
+      assert right == Nx.tensor([[2.0, 3.0], [0.0, -1.0]])
     end
 
     @defn_compiler Nx.Defn.Evaluator
