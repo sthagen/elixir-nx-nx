@@ -688,6 +688,15 @@ defmodule Nx.DefnTest do
                )
     end
 
+    defn cond_lit(a) do
+      if Nx.any?(a), do: 1, else: -1
+    end
+
+    test "supports literals" do
+      assert cond_lit(Nx.tensor(0)), do: Nx.tensor(-1)
+      assert cond_lit(Nx.tensor(1)), do: Nx.tensor(1)
+    end
+
     test "raises if cond is missing last atom clause" do
       assert_raise CompileError, ~r"expected the last clause of cond to match on an atom", fn ->
         defmodule InvalidCond do
@@ -762,9 +771,9 @@ defmodule Nx.DefnTest do
     defn default_qr(t), do: Nx.qr(t)
 
     test "qr" do
-      assert {left, right} = default_qr(Nx.iota({3, 2}))
-      assert left ==  Nx.tensor([[0.0, -1.0], [1.0, 0.0], [0.0, 0.0]])
-      assert right == Nx.tensor([[2.0, 3.0], [0.0, -1.0]])
+      assert {q, r} = default_qr(Nx.iota({3, 2}))
+      assert q == Nx.tensor([[0.0, -1.0], [1.0, 0.0], [0.0, 0.0]])
+      assert r == Nx.tensor([[2.0, 3.0], [0.0, -1.0]])
     end
 
     @defn_compiler Nx.Defn.Evaluator

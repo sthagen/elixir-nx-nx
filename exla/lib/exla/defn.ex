@@ -259,8 +259,12 @@ defmodule EXLA.Defn do
 
   ## to_operator others
 
-  defp to_operator(:elem, [tensor, index, _size], _ans, _state) do
-    EXLA.Op.get_tuple_element(tensor, index)
+  defp to_operator(:metadata, [op, _metadata], _ans, _state) do
+    op
+  end
+
+  defp to_operator(:elem, [op, index, _size], _ans, _state) do
+    EXLA.Op.get_tuple_element(op, index)
   end
 
   defp to_operator(:dot, [left, axes1, right, axes2], %{type: type}, state) do
@@ -338,6 +342,11 @@ defmodule EXLA.Defn do
       |> EXLA.Op.broadcast_in_dim(shape, broadcast_axes(op_shape(on_false), shape))
 
     EXLA.Op.select(pred, on_true, on_false)
+  end
+
+  defp to_operator(:qr, [{%{type: type}, %{type: type}}, tensor, opts], _ans, state) do
+    {q, r} = EXLA.Op.qr(to_type(tensor, type), opts[:mode] != :reduced, state.precision)
+    EXLA.Op.tuple(state.builder, [q, r])
   end
 
   ## to_operator element-wise

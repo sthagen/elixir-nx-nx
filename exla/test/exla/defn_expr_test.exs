@@ -767,6 +767,14 @@ defmodule EXLA.DefnExprTest do
     end
   end
 
+  describe "metadata" do
+    defn add_with_stop_grad(a, b), do: stop_grad(Nx.add(a, b))
+
+    test "ignores metadata nodes" do
+      assert add_with_stop_grad(1, 2) == Nx.tensor(3)
+    end
+  end
+
   describe "cond" do
     defn cond3(a, b, c) do
       d = Nx.sum(a)
@@ -2326,6 +2334,26 @@ defmodule EXLA.DefnExprTest do
                  ],
                  type: {:f, 32}
                )
+    end
+  end
+
+  describe "decompositions" do
+    defn qr(t), do: Nx.qr(t)
+    defn qr_complete(t), do: Nx.qr(t, mode: :complete)
+
+    test "qr" do
+      input = Nx.iota({3, 2})
+      output = Nx.as_type(input, {:f, 64})
+
+      assert {q, r} = qr(input)
+      assert q.shape == {3, 2}
+      assert r.shape == {2, 2}
+      assert compare_tensors!(Nx.dot(q, r), output)
+
+      assert {q, r} = qr_complete(Nx.iota({3, 2}))
+      assert q.shape == {3, 3}
+      assert r.shape == {3, 2}
+      assert compare_tensors!(Nx.dot(q, r), output)
     end
   end
 
