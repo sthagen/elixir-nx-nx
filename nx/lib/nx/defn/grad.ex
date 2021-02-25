@@ -4,10 +4,10 @@ defmodule Nx.Defn.Grad do
   alias Nx.Defn.Expr
   alias Nx.Tensor, as: T
 
-  def transform({to_grad, expr}) do
+  def transform(to_grad, expr) do
     expr = validate_expr!(expr)
 
-    Expr.traverse_exprs(to_grad, fn to_grad ->
+    Expr.traverse(to_grad, fn to_grad ->
       id = grad_id!(to_grad)
       {graded, _} = to_grad(expr, Expr.tensor(1.0), %{id => :stop})
 
@@ -46,7 +46,7 @@ defmodule Nx.Defn.Grad do
   ## Recursion
 
   defp to_grad(expr, res, cache) do
-    Expr.traverse_exprs(expr, cache, fn %T{data: %Expr{id: id, op: op, args: args}} = ans,
+    Expr.traverse(expr, cache, fn %T{data: %Expr{id: id, op: op, args: args}} = ans,
                                         cache ->
       key = [id | res.data.id]
 
@@ -72,11 +72,6 @@ defmodule Nx.Defn.Grad do
         {Expr.tensor(1.0), cache}
 
       %{custom_grad: fun} ->
-        unless is_function(fun, 2) do
-          raise ArgumentError,
-                "custom_grad/2 function must expect 2 arguments, got: #{inspect(fun)}"
-        end
-
         args = fun.(expr, g)
 
         unless is_list(args) and Enum.all?(args, &match?({_, _}, &1)) do
