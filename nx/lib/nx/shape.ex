@@ -413,7 +413,7 @@ defmodule Nx.Shape do
   @doc """
   Output shape after a convolution, already padded.
   """
-  def conv(input_shape, input_names, kernel_shape, _kernel_names, strides, padding) do
+  def conv(input_shape, input_names, kernel_shape, _kernel_names, strides, batch_groups, padding) do
     filter_shape =
       kernel_shape
       |> Tuple.delete_at(0)
@@ -435,7 +435,7 @@ defmodule Nx.Shape do
     spatial_dims = do_spatial_dims(old_spatial_dims, Tuple.to_list(filter_shape), strides)
 
     # TODO: Is it always the case that it's best to return the input names?
-    {List.to_tuple([batch_size, num_filters | spatial_dims]), input_names}
+    {List.to_tuple([div(batch_size, batch_groups), num_filters | spatial_dims]), input_names}
   end
 
   defp do_spatial_dims([], [], []), do: []
@@ -915,6 +915,28 @@ defmodule Nx.Shape do
       raise(
         ArgumentError,
         "tensor must have rank 2, got rank #{tuple_size(shape)} with shape #{inspect(shape)}"
+      )
+
+  def svd({m, n}) do
+    {{m, m}, {n}, {n, n}}
+  end
+
+  def svd(shape),
+    do:
+      raise(
+        ArgumentError,
+        "tensor must have rank 2, got rank #{tuple_size(shape)} with shape #{inspect(shape)}"
+      )
+
+  def lu({n, n}) do
+    {{n, n}, {n, n}, {n, n}}
+  end
+
+  def lu(shape),
+    do:
+      raise(
+        ArgumentError,
+        "tensor must have as many rows as columns, got shape: #{inspect(shape)}"
       )
 
   defp validate_concat_names!(names) do
