@@ -1,7 +1,6 @@
 defmodule MNIST do
   import Nx.Defn
 
-
   defn init_random_params do
     w1 = Nx.random_normal({784, 128}, 0.0, 0.1, names: [:input, :layer])
     b1 = Nx.random_normal({128}, 0.0, 0.1, names: [:layer])
@@ -11,7 +10,8 @@ defmodule MNIST do
   end
 
   defn softmax(logits) do
-    Nx.exp(logits) / Nx.sum(Nx.exp(logits), axes: [:output], keep_axes: true)
+    exp = Nx.exp(logits)
+    Nx.divide(exp, Nx.sum(exp, axes: [:output], keep_axes: true))
   end
 
   defn predict({w1, b1, w2, b2}, batch) do
@@ -29,7 +29,8 @@ defmodule MNIST do
       Nx.equal(
         Nx.argmax(batch_labels, axis: :output),
         Nx.argmax(predict({w1, b1, w2, b2}, batch_images), axis: :output)
-      ) |> Nx.as_type({:s, 8})
+      )
+      |> Nx.as_type({:s, 8})
     )
   end
 
