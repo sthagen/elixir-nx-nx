@@ -25,6 +25,18 @@ inline std::string type2string(const torch::ScalarType type)
 
 #define NIF(NAME) ERL_NIF_TERM NAME(ErlNifEnv *env, int argc, const ERL_NIF_TERM argv[])
 
+#define SCALAR_PARAM(ARGN, VAR) \
+  torch::Scalar VAR;            \
+  VAR.~Scalar();                \
+  double double_##VAR;          \
+  if (enif_get_double(env, argv[ARGN], &double_##VAR) == 0) { \
+    long long_##VAR;                                  \
+    enif_get_int64(env, argv[ARGN], &long_##VAR);     \
+    new (&VAR) torch::Scalar((int64_t)long_##VAR);             \
+  } else {                                            \
+    new (&VAR) torch::Scalar(double_##VAR);           \
+  }
+
 #define SHAPE_PARAM(ARGN, VAR) TUPLE_PARAM(ARGN, std::vector<int64_t>, VAR)
 
 #define TYPE_PARAM(ARGN, VAR)  \
@@ -228,66 +240,6 @@ NIF(split)
   TENSOR_LIST(torch::split(*t, batch_size));
 }
 
-NIF(scalar_tensor)
-{
-  PARAM(0, double, scalar);
-  TYPE_PARAM(1, type);
-  DEVICE_PARAM(2, device);
-
-  TENSOR(torch::scalar_tensor(scalar, OPTS(type, device)));
-}
-
-NIF(randint)
-{
-  PARAM(0, int64_t, min);
-  PARAM(1, int64_t, max);
-  SHAPE_PARAM(2, shape);
-  TYPE_PARAM(3, type);
-  DEVICE_PARAM(4, device);
-
-  TENSOR(torch::randint(min, max, shape, OPTS(type, device)));
-}
-
-NIF(rand)
-{
-  PARAM(0, double, min);
-  PARAM(1, double, max);
-  SHAPE_PARAM(2, shape);
-  TYPE_PARAM(3, type);
-  DEVICE_PARAM(4, device);
-
-  TENSOR(min + torch::rand(shape, OPTS(type, device)) * (max - min));
-}
-
-NIF(normal)
-{
-  PARAM(0, double, mean);
-  PARAM(1, double, std);
-  SHAPE_PARAM(2, shape);
-  TYPE_PARAM(3, type);
-  DEVICE_PARAM(4, device);
-
-  TENSOR(torch::normal(mean, std, shape, c10::nullopt, OPTS(type, device)));
-}
-
-NIF(arange)
-{
-  PARAM(0, int64_t, start);
-  PARAM(1, int64_t, end);
-  PARAM(2, int64_t, step);
-  TYPE_PARAM(3, type);
-  DEVICE_PARAM(4, device);
-
-  if (argc == 6)
-  {
-    SHAPE_PARAM(5, shape);
-    TENSOR(torch::reshape(torch::arange((double)start, (double)end, (double)step, OPTS(type, device)), shape));
-  }
-  else
-  {
-    TENSOR(torch::arange((double)start, (double)end, (double)step, OPTS(type, device)));
-  }
-}
 
 NIF(reshape)
 {
@@ -371,6 +323,70 @@ NIF(permute)
   TENSOR(t->permute(dims).clone());
 }
 
+
+/* Creation */
+
+NIF(scalar_tensor)
+{
+  SCALAR_PARAM(0, scalar);
+  TYPE_PARAM(1, type);
+  DEVICE_PARAM(2, device);
+
+  TENSOR(torch::scalar_tensor(scalar, OPTS(type, device)));
+}
+
+NIF(randint)
+{
+  PARAM(0, int64_t, min);
+  PARAM(1, int64_t, max);
+  SHAPE_PARAM(2, shape);
+  TYPE_PARAM(3, type);
+  DEVICE_PARAM(4, device);
+
+  TENSOR(torch::randint(min, max, shape, OPTS(type, device)));
+}
+
+NIF(rand)
+{
+  PARAM(0, double, min);
+  PARAM(1, double, max);
+  SHAPE_PARAM(2, shape);
+  TYPE_PARAM(3, type);
+  DEVICE_PARAM(4, device);
+
+  TENSOR(min + torch::rand(shape, OPTS(type, device)) * (max - min));
+}
+
+NIF(normal)
+{
+  PARAM(0, double, mean);
+  PARAM(1, double, std);
+  SHAPE_PARAM(2, shape);
+  TYPE_PARAM(3, type);
+  DEVICE_PARAM(4, device);
+
+  TENSOR(torch::normal(mean, std, shape, c10::nullopt, OPTS(type, device)));
+}
+
+NIF(arange)
+{
+  PARAM(0, int64_t, start);
+  PARAM(1, int64_t, end);
+  PARAM(2, int64_t, step);
+  TYPE_PARAM(3, type);
+  DEVICE_PARAM(4, device);
+
+  if (argc == 6)
+  {
+    SHAPE_PARAM(5, shape);
+    TENSOR(torch::reshape(torch::arange((double)start, (double)end, (double)step, OPTS(type, device)), shape));
+  }
+  else
+  {
+    TENSOR(torch::arange((double)start, (double)end, (double)step, OPTS(type, device)));
+  }
+}
+
 NIF(ones)
 {
   SHAPE_PARAM(0, shape);
@@ -392,12 +408,15 @@ NIF(eye)
 NIF(full)
 {
   SHAPE_PARAM(0, shape);
-  PARAM(1, double, scalar);
+  SCALAR_PARAM(1, scalar);
   TYPE_PARAM(2, type);
   DEVICE_PARAM(3, device);
 
   TENSOR(torch::full(shape, scalar, OPTS(type, device)));
 }
+
+
+/* Binary Ops */
 
 #define BINARY_OP(OP)   BINARY_OP2(OP, OP)
 
@@ -451,7 +470,7 @@ BINARY_OP(subtract)
 BINARY_OP(divide)
 BINARY_OP(remainder)
 BINARY_OP(multiply)
-BINARY_OP2(dot, matmul)
+BINARY_OP(matmul)
 BINARY_OP2(power, pow)
 BINARY_OP(atan2)
 BINARY_OP(min)
@@ -466,6 +485,19 @@ NIF(quotient)
   TENSOR(torch::divide(*a, *b, "trunc"));
 }
 
+NIF(tensordot)
+{
+  TENSOR_PARAM(0, t1);
+  TENSOR_PARAM(1, t2);
+  LIST_PARAM(2, std::vector<int64_t>, axes1);
+  LIST_PARAM(3, std::vector<int64_t>, axes2);
+
+  TENSOR(torch::tensordot(*t1, *t2, axes1, axes2));
+}
+
+
+/* Unary Ops */
+
 UNARY_OP(abs)
 UNARY_OP(ceil)
 UNARY_OP(floor)
@@ -477,6 +509,8 @@ UNARY_OP(log)
 UNARY_OP(bitwise_not)
 UNARY_OP2(logistic, sigmoid)
 
+
+/* Aggregates */
 
 NIF(sum)
 {
@@ -525,6 +559,9 @@ NIF(cholesky)
 
   TENSOR(torch::cholesky(*t, upper));
 }
+
+
+/* Transformations */
 
 NIF(qr)
 {
@@ -604,6 +641,7 @@ static ErlNifFunc nif_functions[] = {
     DF(scalar_tensor, 3),
     DF(ones, 2),
     DF(eye, 3),
+    DF(full, 4),
 
     DF(from_blob, 4),
     DF(to_blob, 1),
@@ -665,7 +703,8 @@ static ErlNifFunc nif_functions[] = {
     DF(bitwise_not, 1),
     DF(logistic, 1),
 
-    DF(dot, 2),
+    DF(tensordot, 4),
+    DF(matmul, 2),
 
     DF(cholesky, 1),
     DF(cholesky, 2),
