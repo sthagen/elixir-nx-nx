@@ -671,13 +671,21 @@ defmodule Nx do
 
   """
   @doc type: :random
-  def random_uniform(tensor_or_shape, min, max, opts \\ [])
-      when is_number(min) and is_number(max) do
+  def random_uniform(tensor_or_shape, min, max, opts \\ []) do
     assert_keys!(opts, [:type, :names, :backend])
+    %T{type: min_type, shape: min_shape} = min = tensor!(min)
+    %T{type: max_type, shape: max_shape} = max = tensor!(max)
+
     shape = shape(tensor_or_shape)
     names = Nx.Shape.named_axes!(opts[:names] || names!(tensor_or_shape), shape)
-    range_type = Nx.Type.infer(max - min)
+    range_type = Nx.Type.merge(min_type, max_type)
     type = Nx.Type.normalize!(opts[:type] || range_type)
+
+    unless min_shape == {} and max_shape == {} do
+      raise ArgumentError,
+             "random_uniform/3 expects min and max to be scalars, got:" <>
+             " min shape: #{inspect(min_shape)} and max shape: #{inspect(max_shape)}"
+    end
 
     unless Nx.Type.float?(type) or (Nx.Type.integer?(type) and Nx.Type.integer?(range_type)) do
       raise ArgumentError,
@@ -779,12 +787,24 @@ defmodule Nx do
 
   """
   @doc type: :random
-  def random_normal(tensor_or_shape, mu, sigma, opts \\ [])
-      when is_float(mu) and is_float(sigma) do
+  def random_normal(tensor_or_shape, mu, sigma, opts \\ []) do
     assert_keys!(opts, [:type, :names, :backend])
+    %T{type: mu_type, shape: mu_shape} = mu = tensor!(mu)
+    %T{type: sigma_type, shape: sigma_shape} = sigma = tensor!(sigma)
+
     shape = shape(tensor_or_shape)
     names = Nx.Shape.named_axes!(opts[:names] || names!(tensor_or_shape), shape)
     type = Nx.Type.normalize!(opts[:type] || {:f, 32})
+
+    unless mu_shape == {} and sigma_shape == {} do
+      raise ArgumentError, "random_normal/3 expects mu and sigma to be scalars" <>
+                           " got: mu shape: #{inspect(mu_shape)} and sigma shape: #{inspect(sigma_shape)}"
+    end
+
+    unless Nx.Type.float?(mu_type) and Nx.Type.float?(sigma_type) do
+      raise ArgumentError, "random_normal/3 expects mu and sigma to be float types," <>
+                           " got: mu type: #{inspect(mu_type)} and sigma type: #{inspect(sigma_type)}"
+    end
 
     unless Nx.Type.float?(type) do
       raise ArgumentError, "random_normal/3 expects float type, got: #{inspect(type)}"
@@ -7847,6 +7867,56 @@ defmodule Nx do
     axis = Nx.Shape.normalize_axis(shape, axis, names)
 
     impl!(tensor).sort(tensor, tensor, axis: axis, comparator: comparator)
+  end
+
+  @doc """
+  Solve the equation `a x = b` for x, assuming `a` is a lower triangular matrix.
+
+  ## Examples
+
+      iex> a = Nx.tensor([[3, 0, 0, 0], [2, 1, 0, 0], [1, 0, 1, 0], [1, 1, 1, 1]])
+      iex> Nx.triangular_solve(a, Nx.tensor([4, 2, 4, 2]))
+      #Nx.Tensor<
+        f32[4]
+        [1.3333333730697632, -0.6666666865348816, 2.6666667461395264, -1.3333333730697632]
+      >
+
+      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> Nx.triangular_solve(a, Nx.tensor([1, 2, 1]))
+      #Nx.Tensor<
+        f64[3]
+        [1.0, 1.0, -1.0]
+      >
+      
+  ### Error cases
+
+      iex> Nx.triangular_solve(Nx.tensor([[3, 0, 0, 0], [2, 1, 0, 0]]), Nx.tensor([4, 2, 4, 2]), trans: 0)
+      ** (ArgumentError) expected a square matrix, got: {2, 4}
+
+      iex> Nx.triangular_solve(Nx.tensor([[3, 0, 0, 0], [2, 1, 0, 0], [1, 1, 1, 1], [1, 1, 1, 1]]), Nx.tensor([4]), trans: 0)
+      ** (ArgumentError) incompatible dimensions for a and b on tringular solve
+
+      iex> Nx.triangular_solve(Nx.tensor([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [1, 1, 1, 1]]), Nx.tensor([4, 2, 4, 2]))
+      ** (ArgumentError) can't solve for singular matrix
+
+  """
+  @doc type: :linalg
+  def triangular_solve(a, b, opts \\ []) do
+    %T{shape: s1 = {m, _}} = a = tensor!(a)
+    %T{shape: {q}} = b = tensor!(b)
+
+    case shape(s1) do
+      {n, n} -> {n, n}
+      other -> raise ArgumentError, "expected a square matrix, got: #{inspect(other)}"
+    end
+
+    if m != q do
+      raise ArgumentError, "incompatible dimensions for a and b on tringular solve"
+    end
+
+    assert_keys!(opts, [])
+    output_type = binary_type(a, b) |> Nx.Type.to_floating()
+    impl!(a, b).triangular_solve(%{b | type: output_type}, a, b, [])
   end
 
   @doc """

@@ -228,12 +228,14 @@ defmodule Nx.Defn.Expr do
 
   @impl true
   def random_uniform(out, min, max, _backend_options) do
-    expr(out, nil, :random_uniform, [min, max])
+    {[min, max], context} = to_exprs([min, max])
+    expr(out, context, :random_uniform, [min, max])
   end
 
   @impl true
   def random_normal(out, mu, sigma, _backend_options) do
-    expr(out, nil, :random_normal, [mu, sigma])
+    {[mu, sigma], context} = to_exprs([mu, sigma])
+    expr(out, context, :random_normal, [mu, sigma])
   end
 
   unary_ops =
@@ -612,6 +614,12 @@ defmodule Nx.Defn.Expr do
   def cholesky(out, tensor) do
     tensor = to_expr(tensor)
     expr(out, tensor.data.context, :cholesky, [tensor])
+  end
+
+  @impl true
+  def triangular_solve(out, a, b, opts) do
+    {[a, b], context} = to_exprs([a, b])
+    expr(out, context, :triangular_solve, [a, b, opts])
   end
 
   @impl true
