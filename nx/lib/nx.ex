@@ -2048,10 +2048,9 @@ defmodule Nx do
   """
   @doc type: :shape
   def pad(tensor, pad_value, padding_config) when is_list(padding_config) do
+    output_type = binary_type(tensor, pad_value)
     tensor = tensor!(tensor)
     pad_value = tensor!(pad_value)
-
-    output_type = binary_type(tensor, pad_value)
 
     if pad_value.shape != {} do
       raise ArgumentError, "padding value must be a scalar"
@@ -3984,26 +3983,10 @@ defmodule Nx do
         do: List.duplicate(strides, rank(input_shape)),
         else: strides
 
-    padding_config =
-      case padding do
-        :valid ->
-          List.duplicate({0, 0}, rank(input_shape))
+    dilations = List.duplicate(1, rank(input_shape))
 
-        :same ->
-          Nx.Shape.calculate_padding(input_shape, window_dimensions, strides)
-
-        config when is_list(config) ->
-          config
-
-        _ ->
-          raise ArgumentError,
-                "invalid padding configuration, padding must be" <>
-                  " :valid or :same, or a padding configuration for" <>
-                  " the dimensions of the input tensor"
-      end
-
-    padded_shape = Nx.Shape.pad(input_shape, Enum.map(padding_config, &Tuple.append(&1, 0)))
-    output_window_shape = Nx.Shape.window(padded_shape, window_dimensions, strides)
+    {output_window_shape, padding_config} =
+      Nx.Shape.pool(input_shape, window_dimensions, strides, padding, dilations)
 
     unless output_window_shape == source_shape do
       raise ArgumentError, "source shape must match valid windows in input tensor"
@@ -4084,26 +4067,10 @@ defmodule Nx do
         do: List.duplicate(strides, rank(input_shape)),
         else: strides
 
-    padding_config =
-      case padding do
-        :valid ->
-          List.duplicate({0, 0}, rank(input_shape))
+    dilations = List.duplicate(1, rank(input_shape))
 
-        :same ->
-          Nx.Shape.calculate_padding(input_shape, window_dimensions, strides)
-
-        config when is_list(config) ->
-          config
-
-        _ ->
-          raise ArgumentError,
-                "invalid padding configuration, padding must be" <>
-                  " :valid or :same, or a padding configuration for" <>
-                  " the dimensions of the input tensor"
-      end
-
-    padded_shape = Nx.Shape.pad(input_shape, Enum.map(padding_config, &Tuple.append(&1, 0)))
-    output_window_shape = Nx.Shape.window(padded_shape, window_dimensions, strides)
+    {output_window_shape, padding_config} =
+      Nx.Shape.pool(input_shape, window_dimensions, strides, padding, dilations)
 
     unless output_window_shape == source_shape do
       raise ArgumentError, "source shape must match valid windows in input tensor"
@@ -5317,33 +5284,8 @@ defmodule Nx do
         do: List.duplicate(dilations, rank(tensor.shape)),
         else: dilations
 
-    # Cheat to calculate shape for dilated window
-    window_padding_config =
-      for d <- dilations do
-        {0, 0, d - 1}
-      end
-
-    padding_config =
-      case padding do
-        :valid ->
-          List.duplicate({0, 0}, rank(shape))
-
-        :same ->
-          Nx.Shape.calculate_padding(shape, window_dimensions, strides)
-
-        config when is_list(config) ->
-          config
-
-        _ ->
-          raise ArgumentError,
-                "invalid padding configuration, padding must be" <>
-                  " :valid or :same, or a padding configuration for" <>
-                  " the spatial dimensions of the input tensor"
-      end
-
-    padded_shape = Nx.Shape.pad(shape, Enum.map(padding_config, &Tuple.append(&1, 0)))
-    dilated_shape = Nx.Shape.pad(window_dimensions, window_padding_config)
-    output_shape = Nx.Shape.window(padded_shape, dilated_shape, strides)
+    {output_shape, padding_config} =
+      Nx.Shape.pool(shape, window_dimensions, strides, padding, dilations)
 
     out = %{tensor | shape: output_shape}
     opts = [padding: padding_config, strides: strides, window_dilations: dilations]
@@ -5926,8 +5868,9 @@ defmodule Nx do
   @doc type: :aggregation
   def reduce(tensor, acc, opts \\ [], fun) when is_function(fun, 2) do
     assert_keys!(opts, [:axes, :type, :keep_axes])
-    keep_axes = opts[:keep_axes] || false
     type = Nx.Type.normalize!(opts[:type] || binary_type(tensor, acc))
+    keep_axes = opts[:keep_axes] || false
+
     %{shape: shape, names: names} = tensor = tensor!(tensor)
     acc = tensor!(acc)
 
@@ -6044,38 +5987,13 @@ defmodule Nx do
         do: List.duplicate(dilations, rank(tensor.shape)),
         else: dilations
 
-    # Cheat to calculate the output shape with dilations
-    window_padding_config =
-      for d <- dilations do
-        {0, 0, d - 1}
-      end
-
     strides =
       if is_integer(strides),
         do: List.duplicate(strides, rank(tensor.shape)),
         else: strides
 
-    padding_config =
-      case padding do
-        :valid ->
-          List.duplicate({0, 0}, rank(shape))
-
-        :same ->
-          Nx.Shape.calculate_padding(shape, window_dimensions, strides)
-
-        config when is_list(config) ->
-          config
-
-        _ ->
-          raise ArgumentError,
-                "invalid padding configuration, padding must be" <>
-                  " :valid or :same, or a padding configuration for" <>
-                  " the spatial dimensions of the input tensor"
-      end
-
-    padded_shape = Nx.Shape.pad(shape, Enum.map(padding_config, &Tuple.append(&1, 0)))
-    dilated_shape = Nx.Shape.pad(window_dimensions, window_padding_config)
-    output_shape = Nx.Shape.window(padded_shape, dilated_shape, strides)
+    {output_shape, padding_config} =
+      Nx.Shape.pool(shape, window_dimensions, strides, padding, dilations)
 
     out = %{tensor | shape: output_shape}
     opts = [padding: padding_config, strides: strides, window_dilations: dilations]
@@ -6881,11 +6799,13 @@ defmodule Nx do
       :output_permutation
     ])
 
+    type = binary_type(tensor, kernel) |> Nx.Type.to_floating()
+    strides = opts[:strides] || 1
     padding = opts[:padding] || :valid
     input_dilation = opts[:input_dilation] || 1
     kernel_dilation = opts[:kernel_dilation] || 1
-    feature_groups = opts[:feature_group_size] || 1
-    batch_groups = opts[:batch_group_size] || 1
+    feature_group_count = opts[:feature_group_size] || 1
+    batch_group_count = opts[:batch_group_size] || 1
 
     %{shape: input_shape, names: input_names} = tensor = tensor!(tensor)
     %{shape: kernel_shape, names: kernel_names} = kernel = tensor!(kernel)
@@ -6894,125 +6814,19 @@ defmodule Nx do
     input_permutation = Nx.Shape.normalize_axes(input_shape, input_permutation, input_names)
     kernel_permutation = opts[:kernel_permutation] || axes(kernel_shape)
     kernel_permutation = Nx.Shape.normalize_axes(kernel_shape, kernel_permutation, kernel_names)
-
-    {permuted_input_shape, permuted_input_names} =
-      Nx.Shape.transpose(input_shape, input_permutation, input_names)
-
-    {permuted_kernel_shape, permuted_kernel_names} =
-      Nx.Shape.transpose(kernel_shape, kernel_permutation, kernel_names)
-
     output_permutation = opts[:output_permutation] || axes(input_shape)
-
     output_permutation = Nx.Shape.normalize_axes(input_shape, output_permutation, input_names)
-
-    if rank(input_shape) < 3 do
-      raise ArgumentError,
-            "input shape in conv requires at least rank 3," <>
-              " shape #{inspect(input_shape)} has rank #{rank(input_shape)}"
-    end
-
-    if rank(kernel_shape) < 3 do
-      raise ArgumentError,
-            "kernel shape in conv requires at least rank 3," <>
-              " shape #{inspect(kernel_shape)} has rank #{rank(kernel_shape)}"
-    end
-
-    if batch_groups != 1 and feature_groups != 1 do
-      raise ArgumentError,
-            "either batch groups or feature groups must be 1," <>
-              " got batch_groups = #{batch_groups} and feature_groups = #{feature_groups}"
-    end
-
-    tensor_input_batch_size = elem(permuted_input_shape, 0)
-    tensor_input_channels = elem(permuted_input_shape, 1)
-    kernel_input_channels = elem(permuted_kernel_shape, 1)
-    kernel_output_channels = elem(permuted_kernel_shape, 0)
-
-    if rem(tensor_input_batch_size, batch_groups) != 0 do
-      raise ArgumentError,
-            "batch groups must evenly divide input batch size" <>
-              " got rem(#{batch_groups}, #{tensor_input_batch_size}) != 0"
-    end
-
-    if tensor_input_channels != kernel_input_channels * feature_groups do
-      raise ArgumentError,
-            "size of input channels divided by feature groups must match size of kernel channels," <>
-              " got #{tensor_input_channels} / #{feature_groups} != #{kernel_input_channels}" <>
-              " for shapes #{inspect(input_shape)} and #{inspect(kernel_shape)}"
-    end
-
-    if rem(kernel_output_channels, feature_groups) != 0 do
-      raise ArgumentError,
-            "size of kernel output channels must be evenly divisible by feature groups" <>
-              " got rem(#{kernel_output_channels}, #{feature_groups}) != 0 for kernel" <>
-              " with shape #{inspect(kernel_shape)}"
-    end
-
-    if rem(kernel_output_channels, batch_groups) != 0 do
-      raise ArgumentError,
-            "size of kernel output channels must be evenly divisible by batch groups" <>
-              " got rem(#{kernel_output_channels}, #{batch_groups}) != 0 for kernel" <>
-              " with shape #{inspect(kernel_shape)}"
-    end
-
-    filter_shape =
-      permuted_kernel_shape
-      |> Tuple.delete_at(0)
-      |> Tuple.delete_at(0)
-
-    spatial_dims =
-      permuted_input_shape
-      |> Tuple.delete_at(0)
-      |> Tuple.delete_at(0)
-
-    strides = opts[:strides] || 1
 
     strides =
       if is_integer(strides),
-        do: List.duplicate(strides, rank(spatial_dims)),
+        do: List.duplicate(strides, Nx.rank(input_shape) - 2),
         else: strides
 
-    if length(strides) != rank(spatial_dims) do
-      raise ArgumentError,
-            "rank of strides much match rank of spatial dimensions" <>
-              " got strides #{inspect(strides)} with rank #{length(strides)}" <>
-              " and got spatial dimensions #{inspect(spatial_dims)} of rank" <>
-              " #{rank(spatial_dims)}"
-    end
-
     cond do
-      is_integer(input_dilation) and input_dilation < 1 ->
-        raise ArgumentError,
-              "input dilation must be a positive integer, got #{input_dilation}"
-
-      is_list(input_dilation) and length(input_dilation) != rank(spatial_dims) ->
-        raise ArgumentError,
-              "must specify dilation for each spatial dimension of the input" <>
-                " or specify an integer dilation factor"
-
-      is_list(input_dilation) and Enum.any?(input_dilation, &(&1 < 1 || !is_integer(&1))) ->
-        raise ArgumentError,
-              "input dilation of each dimension must be a positive integer, got " <>
-                inspect(input_dilation)
-
       !is_integer(input_dilation) and !is_list(input_dilation) ->
         raise ArgumentError,
               "input dilation must be a positive integer or list of positive integers, got " <>
                 inspect(input_dilation)
-
-      is_integer(kernel_dilation) and kernel_dilation < 1 ->
-        raise ArgumentError,
-              "kernel dilation must be a positive integer, got #{kernel_dilation}"
-
-      is_list(kernel_dilation) and length(kernel_dilation) != rank(filter_shape) ->
-        raise ArgumentError,
-              "must specify dilation for each spatial dimension of the kernel" <>
-                " or specify an integer dilation factor"
-
-      is_list(kernel_dilation) and Enum.any?(kernel_dilation, &(&1 < 1 || !is_integer(&1))) ->
-        raise ArgumentError,
-              "kernel dilation of each dimension must be a positive integer, got " <>
-                inspect(kernel_dilation)
 
       !is_integer(kernel_dilation) and !is_list(kernel_dilation) ->
         raise ArgumentError,
@@ -7023,84 +6837,33 @@ defmodule Nx do
         :ok
     end
 
-    kernel_dilation =
-      if is_list(kernel_dilation),
-        do: kernel_dilation,
-        else: for(_ <- 1..tuple_size(filter_shape), do: kernel_dilation)
-
-    kernel_dilation_padding_config = [
-      {0, 0, 0},
-      {0, 0, 0} | Enum.map(kernel_dilation, &{0, 0, &1 - 1})
-    ]
-
-    dilated_kernel_shape = Nx.Shape.pad(permuted_kernel_shape, kernel_dilation_padding_config)
-
-    dilated_filter_shape =
-      dilated_kernel_shape
-      |> Tuple.delete_at(0)
-      |> Tuple.delete_at(0)
-
     input_dilation =
       if is_list(input_dilation),
         do: input_dilation,
-        else: for(_ <- 1..tuple_size(spatial_dims), do: input_dilation)
+        else: for(_ <- 1..Nx.rank(input_shape) - 2, do: input_dilation)
 
-    input_dilation_padding_config = [
-      {0, 0, 0},
-      {0, 0, 0} | Enum.map(input_dilation, &{0, 0, &1 - 1})
-    ]
+    kernel_dilation =
+      if is_list(kernel_dilation),
+        do: kernel_dilation,
+        else: for(_ <- 1..Nx.rank(kernel_shape) - 2, do: kernel_dilation)
 
-    dilated_input_shape = Nx.Shape.pad(permuted_input_shape, input_dilation_padding_config)
-
-    dilated_spatial_dims =
-      dilated_input_shape
-      |> Tuple.delete_at(0)
-      |> Tuple.delete_at(0)
-
-    # Always send the padding as an actual padding configuration
-    # so backends don't deal with atoms themselves
-    #
-    # We assume padding is specified only for spatial dims and only
-    # as {edge_high, edge_low} tuples, this conceptually simplifies
-    # things a bit
-    padding_config =
-      case padding do
-        :valid ->
-          List.duplicate({0, 0}, rank(input_shape) - 2)
-
-        :same ->
-          Nx.Shape.calculate_padding(dilated_spatial_dims, dilated_filter_shape)
-
-        config when is_list(config) ->
-          config
-
-        _ ->
-          raise ArgumentError,
-                "invalid padding configuration, padding must be" <>
-                  " :valid or :same, or a padding configuration for" <>
-                  " the spatial dimensions of the input tensor"
-      end
-
-    {shape, names} =
+    {shape, names, padding_config} =
       Nx.Shape.conv(
-        dilated_input_shape,
-        permuted_input_names,
-        dilated_kernel_shape,
-        permuted_kernel_names,
+        input_shape,
+        input_names,
+        kernel_shape,
+        kernel_names,
         strides,
-        batch_groups,
-        padding_config
+        padding,
+        feature_group_count,
+        batch_group_count,
+        input_dilation,
+        kernel_dilation,
+        input_permutation,
+        kernel_permutation,
+        output_permutation
       )
 
-    inv_output_permutation =
-      output_permutation
-      |> Enum.with_index()
-      |> Enum.sort()
-      |> Enum.map(&elem(&1, 1))
-
-    {shape, names} = Nx.Shape.transpose(shape, inv_output_permutation, names)
-
-    type = binary_type(tensor, kernel) |> Nx.Type.to_floating()
     out = %{tensor | type: type, shape: shape, names: names}
 
     impl!(tensor).conv(
@@ -7111,8 +6874,8 @@ defmodule Nx do
       padding: padding_config,
       input_dilation: input_dilation,
       kernel_dilation: kernel_dilation,
-      feature_group_size: feature_groups,
-      batch_group_size: batch_groups,
+      feature_group_size: feature_group_count,
+      batch_group_size: batch_group_count,
       input_permutation: input_permutation,
       kernel_permutation: kernel_permutation,
       output_permutation: output_permutation
@@ -7902,6 +7665,7 @@ defmodule Nx do
   """
   @doc type: :linalg
   def triangular_solve(a, b, opts \\ []) do
+    output_type = binary_type(a, b) |> Nx.Type.to_floating()
     %T{shape: s1 = {m, _}} = a = tensor!(a)
     %T{shape: {q}} = b = tensor!(b)
 
@@ -7915,7 +7679,6 @@ defmodule Nx do
     end
 
     assert_keys!(opts, [])
-    output_type = binary_type(a, b) |> Nx.Type.to_floating()
     impl!(a, b).triangular_solve(%{b | type: output_type}, a, b, [])
   end
 
@@ -8253,6 +8016,10 @@ defmodule Nx do
     type = Nx.Type.infer(number)
     out = %T{shape: {}, type: type, names: []}
     Nx.BinaryBackend.from_binary(out, number_to_binary(number, type), [])
+  end
+
+  defp tensor!(t) do
+    raise ArgumentError, "expected a %Nx.Tensor{} or a number, got: #{inspect(t)}"
   end
 
   defp backend!(backend) when is_atom(backend),
