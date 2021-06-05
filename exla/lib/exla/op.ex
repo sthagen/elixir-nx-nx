@@ -385,6 +385,14 @@ defmodule EXLA.Op do
     %Op{builder: builder, ref: ref}
   end
 
+  def while(
+        %Computation{ref: cond_fn},
+        %Computation{ref: body_fn},
+        %Op{builder: builder, ref: init_value}) do
+    ref = EXLA.NIF.while(cond_fn, body_fn, init_value) |> unwrap!()
+    %Op{builder: builder, ref: ref}
+  end
+
   def convert_element_type(%Op{builder: builder, ref: operand}, dtype) do
     ref = EXLA.NIF.convert_element_type(operand, Shape.dtype_to_charlist(dtype)) |> unwrap!()
     %Op{builder: builder, ref: ref}

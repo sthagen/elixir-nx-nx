@@ -533,6 +533,17 @@ defmodule NxTest do
              """
     end
 
+    test "infinity and nan for f16" do
+      bin = <<0xFC00::16-native, 0x7C00::16-native, 0xFC01::16-native, 0xFC0F::16-native>>
+
+      assert inspect(Nx.from_binary(bin, {:f, 16})) == """
+             #Nx.Tensor<
+               f16[4]
+               [-Inf, Inf, NaN, NaN]
+             >\
+             """
+    end
+
     test "infinity and nan for f32" do
       bin =
         <<0xFF800000::32-native, 0x7F800000::32-native, 0xFF800001::32-native,
@@ -672,6 +683,14 @@ defmodule NxTest do
       assert tensor[[]] == tensor
     end
 
+    test "supports an dynamic tensor" do
+      tensor = Nx.tensor([1, 2, 3], names: [:row])
+      assert tensor[Nx.tensor(1)] == Nx.tensor(2)
+      assert tensor[[Nx.tensor(1)]] == Nx.tensor(2)
+      assert tensor[[row: Nx.tensor(1)]] == Nx.tensor(2)
+      assert tensor[Nx.tensor(-1)] == Nx.tensor(1)
+    end
+
     test "raises on duplicated axis" do
       tensor = Nx.tensor([[1, 2, 3]], names: [:x, :y])
 
@@ -684,7 +703,7 @@ defmodule NxTest do
       tensor = Nx.tensor([[1, 2, 3]], names: [:x, :y])
 
       assert_raise ArgumentError,
-                   ~r"slicing a tensor requires an increasing range, got: 2..1",
+                   ~r"slicing a tensor requires a non-empty range with a step of 1, got: 2..1//-1",
                    fn -> tensor[[y: 2..1]] end
     end
   end
@@ -968,6 +987,66 @@ defmodule NxTest do
       assert_raise ArgumentError, "expected a %Nx.Tensor{} or a number, got: nil", fn ->
         Nx.dot(Nx.tensor([1, 2, 3]), nil)
       end
+    end
+  end
+
+  describe "dot/6" do
+    test "works with batched dot and different size non-batch dims" do
+      t1 = Nx.iota({3, 2, 4, 1})
+      t2 = Nx.iota({3, 4, 2, 2})
+
+      assert Nx.dot(t1, [1, 2], [0], t2, [2, 1], [0]) ==
+               Nx.tensor([[[280, 308]], [[2200, 2292]], [[6168, 6324]]])
+    end
+
+    test "works with multiple batch dimensions" do
+      t1 = Nx.iota({3, 2, 1, 3, 2})
+      t2 = Nx.iota({3, 2, 1, 1, 4})
+
+      assert Nx.dot(t1, [2], [0, 1], t2, [3], [0, 1]) ==
+               Nx.tensor([
+                 [
+                   [
+                     [[[0, 0, 0, 0]], [[0, 1, 2, 3]]],
+                     [[[0, 2, 4, 6]], [[0, 3, 6, 9]]],
+                     [[[0, 4, 8, 12]], [[0, 5, 10, 15]]]
+                   ],
+                   [
+                     [[[24, 30, 36, 42]], [[28, 35, 42, 49]]],
+                     [[[32, 40, 48, 56]], [[36, 45, 54, 63]]],
+                     [[[40, 50, 60, 70]], [[44, 55, 66, 77]]]
+                   ]
+                 ],
+                 [
+                   [
+                     [[[96, 108, 120, 132]], [[104, 117, 130, 143]]],
+                     [[[112, 126, 140, 154]], [[120, 135, 150, 165]]],
+                     [[[128, 144, 160, 176]], [[136, 153, 170, 187]]]
+                   ],
+                   [
+                     [[[216, 234, 252, 270]], [[228, 247, 266, 285]]],
+                     [[[240, 260, 280, 300]], [[252, 273, 294, 315]]],
+                     [[[264, 286, 308, 330]], [[276, 299, 322, 345]]]
+                   ]
+                 ],
+                 [
+                   [
+                     [[[384, 408, 432, 456]], [[400, 425, 450, 475]]],
+                     [[[416, 442, 468, 494]], [[432, 459, 486, 513]]],
+                     [[[448, 476, 504, 532]], [[464, 493, 522, 551]]]
+                   ],
+                   [
+                     [[[600, 630, 660, 690]], [[620, 651, 682, 713]]],
+                     [[[640, 672, 704, 736]], [[660, 693, 726, 759]]],
+                     [[[680, 714, 748, 782]], [[700, 735, 770, 805]]]
+                   ]
+                 ]
+               ])
+    end
+
+    test "works with batch dimension of size 1" do
+      t = Nx.tensor([[[1, 2, 3], [4, 5, 6]]])
+      assert Nx.dot(t, [2], [0], t, [2], [0]) == Nx.tensor([[[14, 32], [32, 77]]])
     end
   end
 
@@ -1284,7 +1363,7 @@ defmodule NxTest do
 
       assert_raise(
         ArgumentError,
-        "unknown key :blep in [blep: :all_day], expected one of [:axis, :comparator]",
+        "unknown key :blep in [blep: :all_day], expected one of [:axis, :direction]",
         fn ->
           Nx.sort(t, blep: :all_day)
         end
@@ -1296,9 +1375,21 @@ defmodule NxTest do
 
       assert_raise(
         ArgumentError,
-        "expected a keyword list with keys [:axis, :comparator], got: [:blep]",
+        "expected a keyword list with keys [:axis, :direction], got: [:blep]",
         fn ->
           Nx.sort(t, [:blep])
+        end
+      )
+    end
+
+    test "raises for invalid direction" do
+      t = Nx.tensor([3, 2, 1, 0])
+
+      assert_raise(
+        ArgumentError,
+        "unknown value for :direction, expected :asc or :desc, got: :invalid",
+        fn ->
+          Nx.sort(t, direction: :invalid)
         end
       )
     end
@@ -1343,6 +1434,18 @@ defmodule NxTest do
                  ],
                  names: [:x, :y, :z]
                )
+    end
+
+    test "raises for invalid direction" do
+      t = Nx.tensor([3, 2, 1, 0])
+
+      assert_raise(
+        ArgumentError,
+        "unknown value for :direction, expected :asc or :desc, got: :invalid",
+        fn ->
+          Nx.argsort(t, direction: :invalid)
+        end
+      )
     end
   end
 

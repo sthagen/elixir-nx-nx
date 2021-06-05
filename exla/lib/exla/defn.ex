@@ -93,7 +93,6 @@ defmodule EXLA.Defn do
       end)
 
     # TODO: We should extract the client and device ordinal from buffers first
-    # TODO: Rename :client to :default_client
     {client_name, options} = Keyword.pop(options, :client, :default)
     {buffers, cache_args} = nx_to_buffer(vars, inputs)
     cache_key = {key, cache_args, client_name, options}
@@ -123,20 +122,22 @@ defmodule EXLA.Defn do
   defp inputs(t, acc),
     do: Tree.traverse_args(t, acc, &inputs/2)
 
+  defp outputs(%T{} = t),
+    do: %{t | data: nil}
+
   defp outputs(tuple) when is_tuple(tuple),
     do: {:tuple, tuple |> Tuple.to_list() |> Enum.map(&outputs/1)}
 
-  defp outputs(%T{} = t),
-    do: %{t | data: nil}
+  defp outputs(map) when is_map(map),
+    do: {:map, map |> Enum.sort() |> Enum.map(fn {k, v} -> {k, outputs(v)} end)}
 
   defp to_root_computation(key, expr, pos_shapes, options) do
     builder = EXLA.Builder.new(inspect(key))
 
-    # TODO: Use Enum.with_index on Elixir v1.12
     params =
-      for {{pos, shape}, i} <- Enum.with_index(pos_shapes) do
+       Enum.with_index(pos_shapes, fn {pos, shape}, i ->
         {pos, EXLA.Op.parameter(builder, i, shape, "p#{i}")}
-      end
+      end)
 
     state = %{
       precision: Keyword.get(options, :precision, :default),
@@ -149,9 +150,14 @@ defmodule EXLA.Defn do
     |> EXLA.Builder.build()
   end
 
-  defp to_root_result(tuple_or_expr, state, cache) do
-    {acc, _cache} = to_root_result(tuple_or_expr, [], state, cache)
+  defp to_root_result(composite, state, cache) do
+    {acc, _cache} = to_root_result(composite, [], state, cache)
     EXLA.Op.tuple(state.builder, Enum.reverse(acc))
+  end
+
+  defp to_root_result(%T{} = expr, acc, state, cache) do
+    {expr, cache} = recur_operator(expr, state, cache)
+    {[expr | acc], cache}
   end
 
   defp to_root_result(tuple, acc, state, cache) when is_tuple(tuple) do
@@ -162,9 +168,12 @@ defmodule EXLA.Defn do
     end)
   end
 
-  defp to_root_result(expr, acc, state, cache) do
-    {expr, cache} = recur_operator(expr, state, cache)
-    {[expr | acc], cache}
+  defp to_root_result(map, acc, state, cache) when is_map(map) do
+    map
+    |> Enum.sort()
+    |> Enum.reduce({acc, cache}, fn {_, expr}, {acc, cache} ->
+      to_root_result(expr, acc, state, cache)
+    end)
   end
 
   ## Operator handling
@@ -180,7 +189,17 @@ defmodule EXLA.Defn do
     end
   end
 
-  defp cached_recur_operator(:cond, %T{data: %Expr{args: [clauses, last]}} = t, state, cache) do
+  defp cached_recur_operator(:while, %T{data: %Expr{args: args}}, state, cache) do
+    [initial, arg, condition, body] = args
+    {initial, cache} = recur_composite(initial, state, cache)
+    condition = recur_computation(:while_condition, [arg], condition, {:pred, 8}, state)
+    body = recur_computation(:while_body, [arg], body, :any, state)
+    {EXLA.Op.while(condition, body, initial), cache}
+  end
+
+  defp cached_recur_operator(:cond, %T{data: %Expr{args: args}} = t, state, cache) do
+    [clauses, last] = args
+
     case clauses do
       [{pred, on_true}] ->
         to_if(pred, on_true, last, state, cache)
@@ -300,9 +319,20 @@ defmodule EXLA.Defn do
     EXLA.Op.get_tuple_element(op, index)
   end
 
-  defp to_operator(:dot, [left, axes1, right, axes2], %{type: type}, state) do
+  defp to_operator(
+         :dot,
+         [left, contract_axes1, batch_axes1, right, contract_axes2, batch_axes2],
+         %{type: type},
+         state
+       ) do
     precision = state.precision
-    EXLA.Op.dot_general(to_type(left, type), to_type(right, type), {axes1, axes2}, precision)
+
+    EXLA.Op.dot_general(
+      to_type(left, type),
+      to_type(right, type),
+      {contract_axes1, batch_axes1, contract_axes2, batch_axes2},
+      precision
+    )
   end
 
   defp to_operator(
@@ -381,17 +411,26 @@ defmodule EXLA.Defn do
     EXLA.Op.select(pred, on_true, on_false)
   end
 
-  defp to_operator(:triangular_solve, [a, b, _opts], %{type: type}, _state) do
-    b_shape = EXLA.Op.get_shape(b).dims
+  defp to_operator(:triangular_solve, [a, b, opts], %{type: type}, _state) do
+    left_side = Keyword.fetch!(opts, :left_side)
+    lower = Keyword.fetch!(opts, :lower)
+    transform = Keyword.fetch!(opts, :transform_a)
 
-    b =
-      b
-      |> to_type(type)
-      |> EXLA.Op.reshape(Tuple.append(b_shape, 1))
+    case EXLA.Op.get_shape(b).dims do
+      {_} = b_shape ->
+        b =
+          b
+          |> to_type(type)
+          |> EXLA.Op.reshape(Tuple.append(b_shape, 1))
 
-    to_type(a, type)
-    |> EXLA.Op.triangular_solve(b, true, true, false, :none)
-    |> EXLA.Op.reshape(b_shape)
+        to_type(a, type)
+        |> EXLA.Op.triangular_solve(b, left_side, lower, false, transform)
+        |> EXLA.Op.reshape(b_shape)
+
+      _ ->
+        to_type(a, type)
+        |> EXLA.Op.triangular_solve(to_type(b, type), left_side, lower, false, transform)
+    end
   end
 
   defp to_operator(:lu, [{_, _, _}, _tensor, _opts], _ans, _state) do
@@ -492,7 +531,11 @@ defmodule EXLA.Defn do
   end
 
   defp to_operator(:bitcast, [arg], %{type: type}, _state) do
-    to_type(arg, type, :bitcast)
+    if op_type(arg) == type do
+      arg
+    else
+      EXLA.Op.bitcast_convert_type(arg, type)
+    end
   end
 
   ## to_operator reduction
@@ -525,7 +568,7 @@ defmodule EXLA.Defn do
 
   defp to_operator(:reduce, [arg, acc, opts, fun], %{type: type, shape: shape}, state) do
     arg = to_type(arg, type)
-    comp = to_computation(fun, type, state)
+    comp = recur_computation(fun, type, state)
     keep_axes = opts[:keep_axes]
     result = EXLA.Op.reduce(arg, to_type(acc, type), comp, reduce_axes(arg, opts[:axes]))
 
@@ -568,7 +611,7 @@ defmodule EXLA.Defn do
     window_dilations = opts[:window_dilations]
 
     arg = to_type(arg, type)
-    comp = to_computation(fun, type, state)
+    comp = recur_computation(fun, type, state)
 
     EXLA.Op.reduce_window(
       arg,
@@ -643,7 +686,7 @@ defmodule EXLA.Defn do
 
   defp to_operator(:map, [arg, fun], %{shape: shape, type: type}, state) do
     arg = to_type(arg, type)
-    comp = to_computation(fun, type, state)
+    comp = recur_computation(fun, type, state)
     EXLA.Op.map(arg, comp, Nx.axes(shape))
   end
 
@@ -662,14 +705,23 @@ defmodule EXLA.Defn do
     EXLA.Op.clamp(operand, min, max)
   end
 
-  defp to_operator(:slice, [tensor, start_indices, lengths, strides], _ans, _state) do
-    # TODO: Use Enum.zip_with on Elixir v1.12
-    limit_indices =
-      start_indices
-      |> Enum.zip(lengths)
-      |> Enum.map(fn {i, len} -> i + len end)
+  defp to_operator(:slice, [tensor, start_indices, lengths, strides], ans, _state) do
+    all_static? = Enum.all?(start_indices, &is_integer/1)
 
-    EXLA.Op.slice(tensor, start_indices, limit_indices, strides)
+    if all_static? do
+      limit_indices = Enum.zip_with(start_indices, lengths, fn i, len -> i + len end)
+      EXLA.Op.slice(tensor, start_indices, limit_indices, strides)
+    else
+      zeros = List.duplicate(0, tuple_size(ans.shape))
+      slice = EXLA.Op.dynamic_slice(tensor, start_indices, lengths)
+      EXLA.Op.slice(slice, zeros, lengths, strides)
+    end
+  end
+
+  defp to_operator(:put_slice, [tensor, slice, start_indices], ans, _state) do
+    tensor = to_type(tensor, ans.type)
+    slice = to_type(slice, ans.type)
+    EXLA.Op.dynamic_update_slice(tensor, slice, start_indices)
   end
 
   defp to_operator(:reverse, [tensor, axes], _ans, _state) do
@@ -693,70 +745,112 @@ defmodule EXLA.Defn do
       |> to_constant(0.0, ans.type)
       |> EXLA.Op.broadcast_in_dim(ans.shape, broadcast_axes({}, ans.shape))
 
-    EXLA.Op.select(EXLA.Op.equal(cholesky, tensor), zeros, cholesky)
+    iota_shape = EXLA.Shape.make_shape({:s, 64}, ans.shape)
+    iota_one = EXLA.Op.iota(state.builder, iota_shape, 1)
+    iota_zero = EXLA.Op.iota(state.builder, iota_shape, 0)
+
+    EXLA.Op.select(EXLA.Op.less_equal(iota_one, iota_zero), cholesky, zeros)
   end
 
-  defp to_operator(:sort, [tensor, opts, comparator], _ans, state) do
+  defp to_operator(:sort, [tensor, opts], ans, state) do
     dimension = opts[:axis]
-    comp = to_computation(comparator, {:pred, 8}, state)
+
+    fun =
+      case opts[:direction] do
+        :asc -> binary_op_fun(:less)
+        :desc -> binary_op_fun(:greater)
+      end
+
+    args = [%{type: ans.type, shape: {}}, %{type: ans.type, shape: {}}]
+    comp = to_computation(:comparator, args, state, fun)
+
     EXLA.Op.sort(tensor, comp, dimension)
   end
 
-  defp to_operator(:argsort, [tensor, opts, comparator], ans, state) do
+  defp to_operator(:argsort, [tensor, opts], ans, state) do
     dimension = opts[:axis]
 
-    # Grow the comparator to arity 4 because argsort uses
-    # variadic_sort underneath
-    [[arg0, arg1], _expr, fun] = comparator.data.args
+    fun =
+      case opts[:direction] do
+        :asc -> binary_op_fun(:less)
+        :desc -> binary_op_fun(:greater)
+      end
 
-    arg2 = Expr.parameter(:argsort, ans.type, {}, 2)
-    arg3 = Expr.parameter(:argsort, ans.type, {}, 3)
+    args = [
+      %{type: op_type(tensor), shape: {}},
+      %{type: op_type(tensor), shape: {}},
+      %{type: ans.type, shape: {}},
+      %{type: ans.type, shape: {}}
+    ]
 
-    comparator_4 = Expr.fun([arg0, arg1, arg2, arg3], fn x, y, _, _ -> fun.(x, y) end)
-
-    comp = to_computation(comparator_4, {:pred, 8}, state)
+    comp = to_computation(:comparator, args, state, fun)
     EXLA.Lib.argsort(state.builder, tensor, dimension, comp, ans.type)
   end
 
   ## Computation helpers
 
-  defp to_computation(%T{data: %Expr{op: :fun, args: [args, expr, fun]}}, type, state) do
-    {:name, name} = Function.info(fun, :name)
-
+  defp recur_computation(name, args, expr, type, state) do
     to_computation(name, args, state, fn state ->
       expr
-      |> to_computation_result(state, %{})
+      |> recur_composite(state, %{})
       |> elem(0)
       |> to_type(type)
     end)
   end
 
+  defp recur_computation(%T{data: %Expr{op: :fun, args: args}}, type, state) do
+    [args, expr, {_, name, _}] = args
+    recur_computation(name, args, expr, type, state)
+  end
+
   defp to_computation(name, args, state, fun) do
     subbuilder = subbuilder(state.builder, Atom.to_string(name))
 
-    # TODO: Use Enum.with_index on Elixir v1.12
-    params =
-      for {%{type: type, shape: shape}, i} <- Enum.with_index(args) do
-        fun_shape = EXLA.Shape.make_shape(type, shape)
-        {i, EXLA.Op.parameter(subbuilder, i, fun_shape, "p#{i}")}
-      end
+    arg_params =
+       Enum.with_index(args, fn arg, i ->
+        fun_shape = computation_arg_shape(arg)
+        {arg, EXLA.Op.parameter(subbuilder, i, fun_shape, "p#{i}")}
+      end)
 
+    {_, params} = Enum.reduce(arg_params, {0, []}, &computation_arg_param(&1, &2))
     state = %{state | builder: subbuilder, params: Map.new(params)}
     EXLA.Builder.build(fun.(state))
   end
 
-  defp to_computation_result(tuple, state, cache) when is_tuple(tuple) do
+  defp computation_arg_shape(%{type: type, shape: shape}) do
+    EXLA.Shape.make_shape(type, shape)
+  end
+
+  defp computation_arg_shape(tuple) when is_tuple(tuple) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.map(&computation_arg_shape/1)
+    |> EXLA.Shape.make_tuple_shape()
+  end
+
+  defp computation_arg_param({%{}, param}, {counter, acc}) do
+    {counter + 1, [{counter, param} | acc]}
+  end
+
+  defp computation_arg_param({tuple, param}, counter_acc) do
+    tuple
+    |> Tuple.to_list()
+    |> Enum.with_index(fn arg, i -> {arg, EXLA.Op.get_tuple_element(param, i)} end)
+    |> Enum.reduce(counter_acc, &computation_arg_param/2)
+  end
+
+  defp recur_composite(tuple, state, cache) when is_tuple(tuple) do
     list = Tuple.to_list(tuple)
 
     if expr = full_tuple(list, tuple_size(tuple)) do
-      to_computation_result(expr, state, cache)
+      recur_composite(expr, state, cache)
     else
-      {elements, cache} = Enum.map_reduce(list, cache, &to_computation_result(&1, state, &2))
+      {elements, cache} = Enum.map_reduce(list, cache, &recur_composite(&1, state, &2))
       {EXLA.Op.tuple(state.builder, elements), cache}
     end
   end
 
-  defp to_computation_result(expr, state, cache) do
+  defp recur_composite(expr, state, cache) do
     recur_operator(expr, state, cache)
   end
 
@@ -831,6 +925,9 @@ defmodule EXLA.Defn do
   ## Cond
 
   defp to_if(pred, on_true, on_false, state, cache) do
+    # Collect all predicate parameters, as those are evaluated
+    # outside of the conditional. All other graphs are evaluated
+    # only if necessary inside the conditional.
     {_, pred_ids} = collect_ids(pred, %{})
 
     {pred_op, cache} = recur_operator(pred, state, cache)
@@ -885,7 +982,7 @@ defmodule EXLA.Defn do
 
     comp =
       expr
-      |> to_computation_result(%{state | builder: subbuilder, params: Map.new(params)}, %{})
+      |> recur_composite(%{state | builder: subbuilder, params: Map.new(params)}, %{})
       |> elem(0)
       |> EXLA.Builder.build()
 
@@ -927,14 +1024,10 @@ defmodule EXLA.Defn do
   defp op_type(op), do: EXLA.Op.get_shape(op).dtype
   defp op_shape(op), do: EXLA.Op.get_shape(op).dims
 
-  defp to_type(op, type, cast \\ :convert) do
-    fun =
-      case cast do
-        :convert -> &EXLA.Op.convert_element_type(&1, type)
-        :bitcast -> &EXLA.Op.bitcast_convert_type(&1, type)
-      end
+  defp to_type(op, :any), do: op
 
-    if op_type(op) == type, do: op, else: fun.(op)
+  defp to_type(op, type) do
+    if op_type(op) == type, do: op, else: EXLA.Op.convert_element_type(op, type)
   end
 
   defp to_constant(builder, constant, type) do
@@ -956,6 +1049,16 @@ defmodule EXLA.Defn do
   defp each_buffer_to_nx({:tuple, outputs}, acc) when is_list(outputs) do
     {exprs, acc} = Enum.map_reduce(outputs, acc, &each_buffer_to_nx/2)
     {List.to_tuple(exprs), acc}
+  end
+
+  defp each_buffer_to_nx({:map, outputs}, acc) when is_list(outputs) do
+    {exprs, acc} =
+      Enum.map_reduce(outputs, acc, fn {k, v}, acc ->
+        {v, acc} = each_buffer_to_nx(v, acc)
+        {{k, v}, acc}
+      end)
+
+    {Map.new(exprs), acc}
   end
 
   defp each_buffer_to_nx(hole, [%EXLA.Buffer{shape: shape} = buffer | acc]) do

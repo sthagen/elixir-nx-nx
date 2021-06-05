@@ -4,7 +4,7 @@ defmodule Nx.Defn.Grad do
   alias Nx.Defn.{Expr, Tree}
   alias Nx.Tensor, as: T
 
-  def transform(to_grad, fun) do
+  def transform(to_grad, fun, transform) do
     {to_grad, ids} =
       Tree.composite(to_grad, %{}, fn to_grad, ids ->
         validate_grad!(to_grad)
@@ -12,7 +12,8 @@ defmodule Nx.Defn.Grad do
         {to_grad, Map.put(ids, to_grad.data.id, :to_grad)}
       end)
 
-    expr = to_grad |> fun.() |> validate_expr!()
+    expr = to_grad |> fun.()
+    transformed_expr = transform.(expr) |> validate_expr!()
 
     # Collect all IDs in the function environment and mark
     # them as stop grads. This is an optimization to avoid
@@ -21,7 +22,7 @@ defmodule Nx.Defn.Grad do
     ids = stop_grads(env, ids)
 
     # Grad all the parameters at the same time to share subtrees.
-    {graded, _} = to_grad(expr, Expr.tensor(1.0), {ids, %{}})
+    {graded, _} = to_grad(transformed_expr, Expr.tensor(1.0), {ids, %{}})
 
     # Now traverse the expression again zerofying
     # the parts that comes from other variables.
@@ -144,7 +145,7 @@ defmodule Nx.Defn.Grad do
   # in the AST.
   defp to_grad(expr, res, cache) do
     Tree.composite(expr, cache, fn
-      %T{data: %Expr{id: id, op: op, args: args}} = ans, {result_cache, jvp_cache} = cache ->
+      %T{data: %Expr{id: id, op: op, args: args}} = ans, {result_cache, no_g_cache} = cache ->
         key = [id | res.data.id]
 
         case result_cache do
@@ -159,28 +160,28 @@ defmodule Nx.Defn.Grad do
 
           %{} ->
             case grad(op, args, ans, res, cache) do
-              {res, {result_cache, jvp_cache}} ->
-                {res, {Map.put(result_cache, key, res), jvp_cache}}
+              {res, {result_cache, no_g_cache}} ->
+                {res, {Map.put(result_cache, key, res), no_g_cache}}
 
               :none ->
-                jvps =
-                  case jvp_cache do
-                    %{^id => jvps} -> jvps
-                    %{} -> jvp(op, args, ans)
+                no_gs =
+                  case no_g_cache do
+                    %{^id => no_gs} -> no_gs
+                    %{} -> no_g_grad(op, args, ans)
                   end
 
-                {res, {result_cache, jvp_cache}} = grad_jvps(jvps, ans, res, cache)
-                {res, {Map.put(result_cache, key, res), Map.put(jvp_cache, id, jvps)}}
+                {res, {result_cache, no_g_cache}} = grad_no_gs(no_gs, ans, res, cache)
+                {res, {Map.put(result_cache, key, res), Map.put(no_g_cache, id, no_gs)}}
             end
         end
     end)
   end
 
-  defp grad_jvps([], _ans, _g, cache), do: {Expr.tensor(0.0), cache}
+  defp grad_no_gs([], _ans, _g, cache), do: {Expr.tensor(0.0), cache}
 
-  defp grad_jvps(jvps, ans, g, cache) do
+  defp grad_no_gs(no_gs, ans, g, cache) do
     {exprs, cache} =
-      Enum.map_reduce(jvps, cache, fn {expr, subg}, cache ->
+      Enum.map_reduce(no_gs, cache, fn {expr, subg}, cache ->
         to_grad(Nx.broadcast(expr, ans), Nx.multiply(g, subg), cache)
       end)
 
@@ -203,7 +204,7 @@ defmodule Nx.Defn.Grad do
   ## Syntax / linear grad
 
   defp grad(:metadata, [_, %{stop_grad: true}], _ans, _g, cache) do
-    {Expr.tensor(1.0), cache}
+    {Expr.tensor(0.0), cache}
   end
 
   defp grad(:metadata, [expr, %{custom_grad: fun}], _ans, g, cache) do
@@ -325,13 +326,23 @@ defmodule Nx.Defn.Grad do
   end
 
   defp grad(:slice, [x, start_indices, _lengths, strides], _ans, g, cache) do
-    lo_pads = start_indices
-    hi_pads = hi_pads(0, g.shape, x.shape, start_indices, strides)
-    interior_pads = Enum.map(strides, &(&1 - 1))
-
-    padding_config = Enum.zip([lo_pads, hi_pads, interior_pads])
+    padding_config = Enum.map(strides, &{0, 0, &1 - 1})
     pad_value = 0.0
-    to_grad(x, Nx.pad(g, pad_value, padding_config), cache)
+    g = Nx.pad(g, pad_value, padding_config)
+
+    zeros = Nx.broadcast(Expr.tensor(0.0), x)
+    g = Nx.put_slice(zeros, g, start_indices)
+
+    to_grad(x, g, cache)
+  end
+
+  defp grad(:put_slice, [x, update, start_indices], _ans, g, cache) do
+    zeros = Nx.broadcast(Expr.tensor(0.0), update)
+
+    operand_t = Nx.put_slice(g, zeros, start_indices)
+    update_t = Nx.slice(g, start_indices, Tuple.to_list(Nx.shape(update)))
+
+    grad_pairs([{x, operand_t}, {update, update_t}], g, cache)
   end
 
   defp grad(:reverse, [x, axes], _ans, g, cache) do
@@ -380,27 +391,30 @@ defmodule Nx.Defn.Grad do
     end)
   end
 
-  defp grad(:dot, [x, axes_x, y, axes_y], ans, g, cache) do
+  defp grad(:dot, [x, axes_x, x_batch_axes, y, axes_y, y_batch_axes], ans, g, cache) do
     g = Nx.broadcast(g, ans)
 
-    contract_gx = up_to(Nx.rank(x.shape) - length(axes_x), Nx.rank(g.shape))
-    contract_gy = up_to(0, Nx.rank(x.shape) - length(axes_x))
+    batch_gx = up_to(0, length(x_batch_axes))
+    batch_gy = up_to(0, length(y_batch_axes))
 
-    contract_x = Nx.axes(x.shape) -- axes_x
-    contract_y = Nx.axes(y.shape) -- axes_y
+    contract_gx = up_to(Nx.rank(x.shape) - length(axes_x), Nx.rank(g.shape))
+    contract_gy = up_to(length(y_batch_axes), Nx.rank(x.shape) - length(axes_x))
+
+    contract_x = (Nx.axes(x.shape) -- axes_x) -- batch_gx
+    contract_y = (Nx.axes(y.shape) -- axes_y) -- batch_gy
 
     transpose_x = Enum.map(argsort(axes_y), &Enum.fetch!(axes_x, &1))
     transpose_y = Enum.map(argsort(axes_x), &Enum.fetch!(axes_y, &1))
 
     gx =
       g
-      |> Nx.dot(contract_gx, y, contract_y)
-      |> Nx.transpose(axes: argsort(contract_x ++ transpose_x))
+      |> Nx.dot(contract_gx, batch_gx, y, contract_y, y_batch_axes)
+      |> Nx.transpose(axes: argsort(x_batch_axes ++ contract_x ++ transpose_x))
 
     gy =
       g
-      |> Nx.dot(contract_gy, x, contract_x)
-      |> Nx.transpose(axes: argsort(contract_y ++ transpose_y))
+      |> Nx.dot(contract_gy, batch_gy, x, contract_x, x_batch_axes)
+      |> Nx.transpose(axes: argsort(y_batch_axes ++ contract_y ++ transpose_y))
 
     grad_pairs([{x, gx}, {y, gy}], g, cache)
   end
@@ -476,29 +490,39 @@ defmodule Nx.Defn.Grad do
     grad_pairs(pairs, g, cache)
   end
 
+  defp grad(:cholesky, [input], l, g, cache) do
+    num = g |> tril() |> Nx.dot([0], l, [0]) |> Nx.transpose()
+    den = l |> Nx.eye(backend: Nx.Defn.Expr) |> Nx.add(1)
+    phi_tril = num |> Nx.divide(den) |> tril()
+
+    bm = Nx.LinAlg.triangular_solve(l, phi_tril, transform_a: :transpose)
+    dl = Nx.LinAlg.triangular_solve(l, bm, left_side: false)
+    to_grad(input, dl, cache)
+  end
+
   defp grad(_op, _args, _ans, _g, _cache) do
     :none
   end
 
-  ## JVP gradients
+  ## Gradients that don't rely on g and can be cached more often
 
-  defp jvp(:add, [x, y], _ans) do
+  defp no_g_grad(:add, [x, y], _ans) do
     [{x, Expr.tensor(1.0)}, {y, Expr.tensor(1.0)}]
   end
 
-  defp jvp(:subtract, [x, y], _ans) do
+  defp no_g_grad(:subtract, [x, y], _ans) do
     [{x, Expr.tensor(1.0)}, {y, Expr.tensor(-1.0)}]
   end
 
-  defp jvp(:multiply, [x, y], _ans) do
+  defp no_g_grad(:multiply, [x, y], _ans) do
     [{x, y}, {y, x}]
   end
 
-  defp jvp(:divide, [x, y], ans) do
+  defp no_g_grad(:divide, [x, y], ans) do
     [{x, Nx.divide(1.0, y)}, {y, Nx.negate(Nx.divide(ans, y))}]
   end
 
-  defp jvp(:quotient, _, _) do
+  defp no_g_grad(:quotient, _, _) do
     raise ArgumentError, """
     cannot compute gradient for Nx.quotient/2.
 
@@ -508,11 +532,11 @@ defmodule Nx.Defn.Grad do
     """
   end
 
-  defp jvp(:remainder, [x, y], _ans) do
+  defp no_g_grad(:remainder, [x, y], _ans) do
     [{x, Expr.tensor(1.0)}, {y, Nx.negate(Nx.floor(Nx.divide(x, y)))}]
   end
 
-  defp jvp(:power, [x, y], ans) do
+  defp no_g_grad(:power, [x, y], ans) do
     # Since we do many operations against literals,
     # we try to surface any scalar number.
     sx = surface_nuldim_scalar(x)
@@ -526,12 +550,12 @@ defmodule Nx.Defn.Grad do
     [{x, gx}, {y, gy}]
   end
 
-  defp jvp(:atan2, [x, y], _ans) do
+  defp no_g_grad(:atan2, [x, y], _ans) do
     den = Nx.add(Nx.multiply(x, x), Nx.multiply(y, y))
     [{x, Nx.divide(y, den)}, {y, Nx.negate(Nx.divide(x, den))}]
   end
 
-  defp jvp(op, [x, y], ans) when op in [:min, :max] do
+  defp no_g_grad(op, [x, y], ans) when op in [:min, :max] do
     lhs =
       Nx.divide(
         Nx.select(Nx.equal(x, ans), 1.0, 0.0),
@@ -547,53 +571,53 @@ defmodule Nx.Defn.Grad do
     [{x, lhs}, {y, rhs}]
   end
 
-  defp jvp(:outer, [x, y], _ans) do
+  defp no_g_grad(:outer, [x, y], _ans) do
     x = Nx.reshape(x, {Nx.size(x.shape), 1})
     y = Nx.reshape(y, {1, Nx.size(y.shape)})
     [{x, y}, {y, x}]
   end
 
-  defp jvp(:as_type, [x], _ans) do
+  defp no_g_grad(:as_type, [x], _ans) do
     [{x, Expr.tensor(1.0)}]
   end
 
-  defp jvp(:bitcast, [x], _ans) do
+  defp no_g_grad(:bitcast, [x], _ans) do
     [{x, Expr.tensor(1.0)}]
   end
 
-  defp jvp(:metadata, [expr, _metadata], _ans) do
+  defp no_g_grad(:metadata, [expr, _metadata], _ans) do
     [{expr, Expr.tensor(1.0)}]
   end
 
-  defp jvp(:abs, [x], _ans) do
+  defp no_g_grad(:abs, [x], _ans) do
     [{x, Nx.select(Nx.greater_equal(x, 0.0), 1.0, -1.0)}]
   end
 
-  defp jvp(:sqrt, [x], ans) do
+  defp no_g_grad(:sqrt, [x], ans) do
     [{x, Nx.divide(0.5, ans)}]
   end
 
-  defp jvp(:cbrt, [x], ans) do
+  defp no_g_grad(:cbrt, [x], ans) do
     [{x, Nx.divide(1.0, 3 |> Nx.multiply(ans) |> Nx.multiply(ans))}]
   end
 
-  defp jvp(:exp, [x], ans) do
+  defp no_g_grad(:exp, [x], ans) do
     [{x, ans}]
   end
 
-  defp jvp(:expm1, [x], ans) do
+  defp no_g_grad(:expm1, [x], ans) do
     [{x, Nx.add(ans, 1)}]
   end
 
-  defp jvp(:log, [x], _ans) do
+  defp no_g_grad(:log, [x], _ans) do
     [{x, Nx.divide(1.0, x)}]
   end
 
-  defp jvp(:log1p, [x], _ans) do
+  defp no_g_grad(:log1p, [x], _ans) do
     [{x, Nx.divide(1.0, Nx.add(x, 1))}]
   end
 
-  defp jvp(:logistic, [x], ans) do
+  defp no_g_grad(:logistic, [x], ans) do
     g =
       x
       |> Nx.negate()
@@ -604,67 +628,67 @@ defmodule Nx.Defn.Grad do
     [{x, g}]
   end
 
-  defp jvp(:negate, [x], _ans) do
+  defp no_g_grad(:negate, [x], _ans) do
     [{x, Expr.tensor(-1.0)}]
   end
 
-  defp jvp(:rsqrt, [x], _ans) do
+  defp no_g_grad(:rsqrt, [x], _ans) do
     [{x, Nx.multiply(-0.5, Nx.power(x, -1.5))}]
   end
 
-  defp jvp(:sin, [x], _ans) do
+  defp no_g_grad(:sin, [x], _ans) do
     [{x, Nx.cos(x)}]
   end
 
-  defp jvp(:asin, [x], _ans) do
+  defp no_g_grad(:asin, [x], _ans) do
     [{x, Nx.rsqrt(Nx.subtract(1.0, Nx.multiply(x, x)))}]
   end
 
-  defp jvp(:sinh, [x], _ans) do
+  defp no_g_grad(:sinh, [x], _ans) do
     [{x, Nx.cosh(x)}]
   end
 
-  defp jvp(:asinh, [x], _ans) do
+  defp no_g_grad(:asinh, [x], _ans) do
     [{x, Nx.rsqrt(Nx.add(Nx.multiply(x, x), 1.0))}]
   end
 
-  defp jvp(:acosh, [x], _ans) do
+  defp no_g_grad(:acosh, [x], _ans) do
     [{x, Nx.rsqrt(Nx.subtract(Nx.multiply(x, x), 1.0))}]
   end
 
-  defp jvp(:atanh, [x], _ans) do
+  defp no_g_grad(:atanh, [x], _ans) do
     [{x, Nx.divide(1.0, Nx.subtract(1.0, Nx.multiply(x, x)))}]
   end
 
-  defp jvp(:cos, [x], _ans) do
+  defp no_g_grad(:cos, [x], _ans) do
     [{x, Nx.negate(Nx.sin(x))}]
   end
 
-  defp jvp(:acos, [x], _ans) do
+  defp no_g_grad(:acos, [x], _ans) do
     [{x, Nx.negate(Nx.rsqrt(Nx.subtract(1.0, Nx.multiply(x, x))))}]
   end
 
-  defp jvp(:cosh, [x], _ans) do
+  defp no_g_grad(:cosh, [x], _ans) do
     [{x, Nx.sinh(x)}]
   end
 
-  defp jvp(:tan, [x], _ans) do
+  defp no_g_grad(:tan, [x], _ans) do
     cos = Nx.cos(x)
     [{x, 1 |> Nx.divide(cos) |> Nx.divide(cos)}]
   end
 
-  defp jvp(:atan, [x], _ans) do
+  defp no_g_grad(:atan, [x], _ans) do
     [{x, Nx.divide(1.0, Nx.add(1.0, Nx.multiply(x, x)))}]
   end
 
-  defp jvp(:tanh, [x], ans) do
+  defp no_g_grad(:tanh, [x], ans) do
     [{x, Nx.subtract(1.0, Nx.multiply(ans, ans))}]
   end
 
   @half_sqrt_pi :math.sqrt(:math.pi()) / 2
   @two_rsqrt_pi 2 / :math.sqrt(:math.pi())
 
-  defp jvp(:erf, [x], _ans) do
+  defp no_g_grad(:erf, [x], _ans) do
     g =
       x
       |> Nx.multiply(x)
@@ -675,7 +699,7 @@ defmodule Nx.Defn.Grad do
     [{x, g}]
   end
 
-  defp jvp(:erfc, [x], _ans) do
+  defp no_g_grad(:erfc, [x], _ans) do
     g =
       x
       |> Nx.multiply(x)
@@ -686,12 +710,12 @@ defmodule Nx.Defn.Grad do
     [{x, g}]
   end
 
-  defp jvp(:erf_inv, [x], ans) do
+  defp no_g_grad(:erf_inv, [x], ans) do
     g = Nx.multiply(@half_sqrt_pi, Nx.exp(Nx.multiply(ans, ans)))
     [{x, g}]
   end
 
-  defp jvp(:reduce, _, _) do
+  defp no_g_grad(:reduce, _, _) do
     raise ArgumentError, """
     cannot compute gradient for Nx.reduce/4.
 
@@ -703,7 +727,7 @@ defmodule Nx.Defn.Grad do
     """
   end
 
-  defp jvp(:window_product, _, _) do
+  defp no_g_grad(:window_product, _, _) do
     raise ArgumentError, """
     cannot compute gradient for Nx.window_product/3.
 
@@ -713,7 +737,7 @@ defmodule Nx.Defn.Grad do
     """
   end
 
-  defp jvp(:reduce_window, _, _) do
+  defp no_g_grad(:reduce_window, _, _) do
     raise ArgumentError, """
     cannot compute gradient for Nx.reduce_window/5.
 
@@ -727,7 +751,7 @@ defmodule Nx.Defn.Grad do
 
   @error [:map]
 
-  defp jvp(op, _, _) when op in @error do
+  defp no_g_grad(op, _, _) when op in @error do
     raise ArgumentError, """
     cannot compute gradient for Nx.#{op}.
 
@@ -745,11 +769,11 @@ defmodule Nx.Defn.Grad do
                [:floor, :round, :ceil, :sign] ++
                [:equal, :greater, :greater_equal, :less, :less_equal, :not_equal]
 
-  defp jvp(op, _, _) when op in @constants do
+  defp no_g_grad(op, _, _) when op in @constants do
     []
   end
 
-  defp jvp(op, _, _) do
+  defp no_g_grad(op, _, _) do
     raise ArgumentError, """
     gradient not yet implemented for Nx.#{op}.
 
@@ -926,16 +950,11 @@ defmodule Nx.Defn.Grad do
     rhs_dilated_shape = Tuple.to_list(Nx.Shape.pad(rhs_sdims, rhs_dilated_padding_config))
     out_dilated_shape = Tuple.to_list(Nx.Shape.pad(out_sdims, out_dilated_padding_config))
 
-    # TODO: Use Enum.zip_with on Elixir v1.12
-    pad_before =
-      rhs_dilated_shape
-      |> Enum.zip(padding)
-      |> Enum.map(fn {s, {lo, _}} -> s - lo - 1 end)
+    pad_before = Enum.zip_with(rhs_dilated_shape, padding, fn s, {lo, _} -> s - lo - 1 end)
 
     pad_after =
       [lhs_dilated_shape, rhs_dilated_shape, out_dilated_shape, pad_before]
-      |> Enum.zip()
-      |> Enum.map(fn {l, r, o, p} -> l + r - 1 - o - p end)
+      |> Enum.zip_with(fn [l, r, o, p] -> l + r - 1 - o - p end)
 
     Enum.zip(pad_before, pad_after)
   end
@@ -956,15 +975,11 @@ defmodule Nx.Defn.Grad do
     rhs_dilated_shape = Tuple.to_list(Nx.Shape.pad(rhs_sdims, rhs_dilated_padding_config))
     out_dilated_shape = Tuple.to_list(Nx.Shape.pad(out_sdims, out_dilated_padding_config))
 
-    # TODO: Use Enum.zip_with on Elixir v1.12
     total_in_pad =
       [out_dilated_shape, rhs_dilated_shape, lhs_dilated_shape]
-      |> Enum.zip()
-      |> Enum.map(fn {o, r, l} -> o + r - l - 1 end)
+      |> Enum.zip_with(fn [o, r, l] -> o + r - l - 1 end)
 
-    padding
-    |> Enum.zip(total_in_pad)
-    |> Enum.map(fn {{lo, _}, hi} -> {lo, hi - lo} end)
+    Enum.zip_with(padding, total_in_pad, fn {lo, _}, hi -> {lo, hi - lo} end)
   end
 
   defp reshape_axis_into(src, dst, x) do
@@ -1001,16 +1016,6 @@ defmodule Nx.Defn.Grad do
     to_grad(x, fun.(g), cache)
   end
 
-  defp hi_pads(pos, g_shape, x_shape, [start | starts], [stride | strides]) do
-    g_dim = elem(g_shape, pos)
-    x_dim = elem(x_shape, pos)
-
-    val = x_dim - (start + (1 + stride * (g_dim - 1)))
-    [val | hi_pads(pos + 1, g_shape, x_shape, starts, strides)]
-  end
-
-  defp hi_pads(_, _, _, [], []), do: []
-
   defp surface_nuldim_scalar(expr) do
     case expr do
       %T{data: %Expr{op: :scalar, args: [scalar]}, shape: {}} -> scalar
@@ -1022,4 +1027,13 @@ defmodule Nx.Defn.Grad do
   defp up_to(_, _), do: []
 
   defp argsort(list), do: list |> Enum.with_index() |> Enum.sort() |> Enum.map(&elem(&1, 1))
+
+  defp tril(t) do
+    lower_selector =
+      t
+      |> Nx.iota(axis: 0, backend: Nx.Defn.Expr)
+      |> Nx.greater_equal(Nx.iota(t, axis: 1, backend: Nx.Defn.Expr))
+
+    Nx.select(lower_selector, t, Nx.tensor(0, backend: Nx.Defn.Expr, type: t.type))
+  end
 end

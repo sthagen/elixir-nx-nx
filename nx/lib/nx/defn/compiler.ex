@@ -32,7 +32,7 @@ defmodule Nx.Defn.Compiler do
   at root modules without affecting the module's main API.
   """
   @callback __jit__(key :: term, vars :: [Nx.t()], ([Nx.t()] -> Nx.t()), opts :: keyword) ::
-              Nx.t() | tuple()
+              Nx.t() | tuple() | map()
 
   @doc """
   Callback for AOT compilation.
@@ -123,10 +123,9 @@ defmodule Nx.Defn.Compiler do
         tensors = Nx.Defn.Tree.from_runtime_args(results)
         results = Nx.Defn.Tree.args_to_templates(results, tensors)
 
-        # TODO: Use Enum.zip_with on Elixir v1.12
-        {export_tuples, []} =
-          Enum.map_reduce(export_tuples, results, fn {name, arity}, [result | results] ->
-            {{name, arity, result}, results}
+        export_tuples =
+          Enum.zip_with(export_tuples, results, fn {name, arity}, result ->
+            {name, arity, result}
           end)
 
         path = Path.join(output_dir, "#{module}.nx.aot")
@@ -310,8 +309,15 @@ defmodule Nx.Defn.Compiler do
       :error, :undef ->
         stack =
           case __STACKTRACE__ do
-            [{^module, ^defn, args_or_arity, info} | stack] ->
-              [{module, function, args_or_arity, info} | stack]
+            [{^module, ^defn, args_or_arity, info}, _ | stack] ->
+              if function_exported?(module, function, length(args)) do
+                formatted = Exception.format_mfa(module, function, length(args))
+
+                reraise "cannot invoke #{formatted} inside defn because it was not defined with defn",
+                        stack
+              else
+                [{module, function, args_or_arity, info} | stack]
+              end
 
             stack ->
               stack
@@ -356,7 +362,7 @@ defmodule Nx.Defn.Compiler do
       end
 
     quote line: state.line do
-      Nx.Defn.Module.delete_definition(__MODULE__, unquote(def))
+      Module.delete_definition(__MODULE__, unquote(def))
 
       Kernel.unquote(kind)(unquote(name)(unquote_splicing(all_args))) do
         if Process.get(Nx.Defn.Compiler) do
@@ -392,7 +398,7 @@ defmodule Nx.Defn.Compiler do
   end
 
   defp get_and_normalize_definition(def, state) do
-    {:v1, kind, meta, clauses} = Nx.Defn.Module.get_definition(state.module, def)
+    {:v1, kind, meta, clauses} = Module.get_definition(state.module, def)
     state = %{state | function: def, line: meta[:line] || state.line, rewrite_underscore?: true}
 
     case clauses do
@@ -410,6 +416,12 @@ defmodule Nx.Defn.Compiler do
   end
 
   ## Normalization
+
+  defp normalize({:%{}, meta, [{:|, update_meta, [map, args]}]}, state) do
+    {map, state} = normalize(map, state)
+    {args, state} = normalize(args, state)
+    {{:%{}, meta, [{:|, update_meta, [map, args]}]}, state}
+  end
 
   defp normalize({special_form, meta, args}, state)
        when special_form in [:{}, :%{}, :__block__] do
@@ -545,6 +557,11 @@ defmodule Nx.Defn.Compiler do
      state}
   end
 
+  defp normalize({{:., dot_meta, [remote, name]}, meta, []}, state) when is_atom(name) do
+    {remote, state} = normalize(remote, state)
+    {{{:., dot_meta, [Map, :fetch!]}, meta, [remote, name]}, state}
+  end
+
   defp normalize({left, right}, state) do
     {left, state} = normalize(left, state)
     {right, state} = normalize(right, state)
@@ -624,11 +641,20 @@ defmodule Nx.Defn.Compiler do
 
   defp normalize_arg(var, _meta, state) when is_var(var) do
     if state.rewrite_underscore? and is_underscore(var) do
-      # TODO: Use Macro.unique_var on Elixir v1.12
-      {{:arg, [counter: :elixir_module.next_counter(state.module)], state.module}, state}
+      {Macro.unique_var(:arg, state.module), state}
     else
       normalize(var, state)
     end
+  end
+
+  defp normalize_arg({:%{}, meta, args}, _meta, state) do
+    {args, state} =
+      Enum.map_reduce(args, state, fn {k, v}, acc ->
+        {v, acc} = normalize_arg(v, meta, acc)
+        {{k, v}, acc}
+      end)
+
+    {{:%{}, meta, args}, state}
   end
 
   defp normalize_arg({op, meta, args}, _meta, state) when op in [:{}, :=] do
@@ -646,7 +672,7 @@ defmodule Nx.Defn.Compiler do
     compile_error!(
       meta,
       state,
-      "only variables and tuples are allowed as arguments in defn, got: #{Macro.to_string(expr)}"
+      "only variables, tuples, and maps are allowed as patterns in defn, got: #{Macro.to_string(expr)}"
     )
   end
 

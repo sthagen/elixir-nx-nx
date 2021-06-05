@@ -4,6 +4,9 @@ defmodule Nx.Defn.ExprTest do
   alias Nx.Defn.Expr
   alias Nx.Tensor, as: T
 
+  import Nx.Defn
+  @default_defn_compiler Nx.Defn.Identity
+
   describe "scalar optimizations" do
     test "broadcast" do
       assert %T{data: %Expr{op: :scalar, args: [1.0]}, type: {:f, 32}, shape: {1, 2, 3}} =
@@ -197,7 +200,7 @@ defmodule Nx.Defn.ExprTest do
                Nx.Defn.Expr
                parameter a                                 s64[2][2]
                parameter c                                 s64[2][2]
-               b = dot [ a, [1], a, [0] ]                  s64[2][2]
+               b = dot [ a, [1], [], a, [0], [] ]          s64[2][2]
                d = tanh [ c ]                              f32[2][2]
                e = add [ b, d ]                            f32[2][2]
                f = add [ 2, e ]                            f32[2][2]
@@ -220,7 +223,7 @@ defmodule Nx.Defn.ExprTest do
                tensor b                                       s64[2][2]
                parameter e                                    s64[2][2]
                a = iota [ nil ]                               s64[2][2]
-               c = dot [ a, [1], b, [0] ]                     s64[2][2]
+               c = dot [ a, [1], [], b, [0], [] ]             s64[2][2]
                d = tanh [ c ]                                 f32[2][2]
                f = add [ d, e ]                               f32[2][2]
                g = argmin [ f, tie_break: :high, axis: nil ]  s64
@@ -256,6 +259,33 @@ defmodule Nx.Defn.ExprTest do
              """
     end
 
+    test "with tuple output" do
+      a = Expr.parameter(nil, {:s, 64}, {2, 2}, 0)
+      {q, r} = Nx.LinAlg.qr(a)
+
+      assert inspect(q, safe: false) == """
+             #Nx.Tensor<
+               f32[2][2]
+             \s\s
+               Nx.Defn.Expr
+               parameter a                                 s64[2][2]
+               b = qr [ a, eps: 1.0e-10, mode: :reduced ]  tuple2
+               c = elem [ b, 0, 2 ]                        f32[2][2]
+             >\
+             """
+
+      assert inspect(r, safe: false) == """
+             #Nx.Tensor<
+               f32[2][2]
+             \s\s
+               Nx.Defn.Expr
+               parameter a                                 s64[2][2]
+               b = qr [ a, eps: 1.0e-10, mode: :reduced ]  tuple2
+               c = elem [ b, 1, 2 ]                        f32[2][2]
+             >\
+             """
+    end
+
     test "with tuple and cond" do
       a = Expr.parameter(nil, {:s, 64}, {}, 0)
       b = Expr.parameter(nil, {:s, 64}, {}, 1)
@@ -284,6 +314,28 @@ defmodule Nx.Defn.ExprTest do
                b = any? [ a, axes: nil, keep_axes: false ]     u8
                d = cond [ b -> {a, c}, :otherwise -> {c, a} ]  tuple2
                e = elem [ d, 1, 2 ]                            s64
+             >\
+             """
+    end
+
+    defn factorial(x) do
+      {factorial, _} =
+        while {factorial = 1.0, x}, Nx.greater(x, 1) do
+          {factorial * x, x - 1}
+        end
+
+      factorial
+    end
+
+    test "with while" do
+      assert inspect(factorial(Nx.template({}, {:f, 32})), safe: false) == """
+             #Nx.Tensor<
+               f32
+             \s\s
+               Nx.Defn.Expr
+               parameter a             f32
+               b = while [ {1.0, a} ]  tuple2
+               c = elem [ b, 0, 2 ]    f32
              >\
              """
     end

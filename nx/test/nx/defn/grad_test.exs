@@ -32,7 +32,7 @@ defmodule Nx.Defn.GradTest do
 
     test "raises on invalid" do
       assert_raise ArgumentError,
-                   "expected a tensor expression or a tuple of tensor expressions, got: :invalid",
+                   "the first argument of grad must be a tensor expression or a tuple of tensor expressions, got: :invalid",
                    fn -> grad_invalid(Nx.tensor(1)) end
     end
   end
@@ -57,8 +57,8 @@ defmodule Nx.Defn.GradTest do
       do: grad({a, b}, fn {a, b} -> stop_grad(Nx.exp(a) + Nx.exp(b)) end)
 
     test "stops computing gradient" do
-      assert stop_grad_meta(Nx.tensor(1)) == Nx.tensor(1.0)
-      assert stop_grad_tuple_meta(Nx.tensor(1), Nx.tensor(1)) == {Nx.tensor(1.0), Nx.tensor(1.0)}
+      assert stop_grad_meta(Nx.tensor(1)) == Nx.tensor(0.0)
+      assert stop_grad_tuple_meta(Nx.tensor(1), Nx.tensor(1)) == {Nx.tensor(0.0), Nx.tensor(0.0)}
     end
 
     defn custom_grad_meta(t) do
@@ -395,6 +395,22 @@ defmodule Nx.Defn.GradTest do
                Nx.iota({5, 2})
              ) ==
                Nx.tensor([25.0, 115.0, 205.0])
+    end
+
+    defn grad_batched_dot_rule_lhs(t1, t2) do
+      grad(t1, &Nx.sum(Nx.dot(&1, [1], [0], t2, [2], [0])))
+    end
+
+    test "computes the gradient with dot with batching" do
+      assert grad_batched_dot_rule_lhs(
+               Nx.iota({3, 2, 4}, type: {:f, 32}),
+               Nx.iota({3, 3, 2}, type: {:f, 32})
+             ) ==
+               Nx.tensor([
+                 [[6.0, 6.0, 6.0, 6.0], [9.0, 9.0, 9.0, 9.0]],
+                 [[24.0, 24.0, 24.0, 24.0], [27.0, 27.0, 27.0, 27.0]],
+                 [[42.0, 42.0, 42.0, 42.0], [45.0, 45.0, 45.0, 45.0]]
+               ])
     end
   end
 
@@ -1420,7 +1436,7 @@ defmodule Nx.Defn.GradTest do
     defn grad_tuple_output(a), do: grad(a, &{&1 + 1, &1 - 1})
 
     test "raises on tuple output" do
-      assert_raise ArgumentError, ~r"expected a tensor or a numbe", fn ->
+      assert_raise ArgumentError, ~r"expected a tensor or a number", fn ->
         grad_tuple_output(Nx.tensor(1.0))
       end
     end
@@ -1646,6 +1662,35 @@ defmodule Nx.Defn.GradTest do
     end
   end
 
+  describe "cholesky" do
+    defn cholesky_grad(t) do
+      grad(t, fn x -> x |> Nx.LinAlg.cholesky() |> Nx.sum() end)
+    end
+
+    defn cholesky_cos_grad(t) do
+      grad(t, fn x -> x |> Nx.LinAlg.cholesky() |> Nx.cos() |> Nx.sum() end)
+    end
+
+    defn exp_cholesky_grad(t) do
+      grad(t, fn x -> x |> Nx.exp() |> Nx.LinAlg.cholesky() |> Nx.sum() end)
+    end
+
+    test "computes grad for {2, 2}-tensor" do
+      t = Nx.tensor([[1.0, 2.0], [2.0, 5.0]])
+      assert cholesky_grad(t) == Nx.tensor([[1.5, -1.0], [0.0, 0.5]])
+    end
+
+    test "computes grad for composed {2,2}-tensor" do
+      t = Nx.tensor([[1.0, 2.0], [2.0, 5.0]])
+
+      assert cholesky_cos_grad(t) ==
+               Nx.tensor([[-1.1943799, 0.84147096], [-0.06782645, -0.42073548]])
+
+      assert exp_cholesky_grad(t) ==
+               Nx.tensor([[-0.5299541, -0.88652998], [3.59515929, 6.550619]])
+    end
+  end
+
   describe "squeeze" do
     defn grad_sum_squeeze_broadcast(t),
       do: grad(t, &Nx.sum(Nx.squeeze(Nx.broadcast(&1, {3, 2, 2}))))
@@ -1700,7 +1745,14 @@ defmodule Nx.Defn.GradTest do
 
   describe "slice" do
     defn grad_mean_slice(t), do: grad(t, &Nx.mean(Nx.slice(&1, [0, 1], [1, 2], strides: [1, 2])))
+
+    defn grad_mean_dynamic_slice(t),
+      do: grad(t, &Nx.mean(Nx.slice(&1, [Nx.tensor(0), Nx.tensor(1)], [1, 2], strides: [1, 2])))
+
     defn grad_sum_slice(t), do: grad(t, &Nx.sum(Nx.slice(&1, [1, 0], [1, 2], strides: [1, 1])))
+
+    defn grad_sum_dynamic_slice(t),
+      do: grad(t, &Nx.sum(Nx.slice(&1, [Nx.tensor(1), Nx.tensor(0)], [1, 2], strides: [1, 1])))
 
     defn grad_sum_pad_slice(t) do
       grad(
@@ -1713,11 +1765,28 @@ defmodule Nx.Defn.GradTest do
       )
     end
 
+    defn grad_sum_pad_dynamic_slice(t) do
+      grad(
+        t,
+        fn t ->
+          Nx.slice(t, [Nx.tensor(1), Nx.tensor(0)], [1, 2], strides: [1, 1])
+          |> Nx.pad(Nx.mean(Nx.sin(t)), [{2, 1, 2}, {-1, 2, 0}])
+          |> Nx.sum()
+        end
+      )
+    end
+
     test "computes gradient" do
       assert grad_mean_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])) ==
                Nx.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]])
 
+      assert grad_mean_dynamic_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])) ==
+               Nx.tensor([[0.0, 1.0, 0.0], [0.0, 0.0, 0.0]])
+
       assert grad_sum_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])) ==
+               Nx.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
+
+      assert grad_sum_dynamic_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])) ==
                Nx.tensor([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0]])
 
       lhs = grad_sum_pad_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
@@ -1727,6 +1796,93 @@ defmodule Nx.Defn.GradTest do
           [0.9905542274249228, -0.7629358670030943, -1.8149862437674833],
           [-1.1983466382499552, 1.520047340015915, 1.7603121921923377]
         ])
+
+      compare_tensors!(lhs, rhs)
+
+      lhs = grad_sum_pad_dynamic_slice(Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+
+      compare_tensors!(lhs, rhs)
+    end
+
+    defn grad_of_index(t, index), do: grad(index, &Nx.mean(Nx.slice(t, [&1], [2])))
+
+    test "computes gradient of index" do
+      assert grad_of_index(
+               Nx.tensor([1.0, 2.0, 3.0, 4.0, 5.0]),
+               Nx.reduce_max(Nx.tensor([-1, 0, 1]))
+             ) == Nx.tensor(0.0)
+    end
+  end
+
+  describe "put_slice" do
+    defn grad_mean_put_slice_operand(t1, t2), do: grad(t1, &Nx.mean(Nx.put_slice(&1, t2, [0, 1])))
+    defn grad_mean_put_slice_update(t1, t2), do: grad(t2, &Nx.mean(Nx.put_slice(t1, &1, [0, 1])))
+
+    defn grad_sum_pad_put_slice_cos_operand(t1, t2) do
+      grad(t1, fn t ->
+        t
+        |> Nx.cos()
+        |> Nx.put_slice(Nx.sin(t2), [1, 2])
+        |> Nx.pad(Nx.mean(Nx.sin(t)), [{2, 1, 2}, {-1, 2, 0}])
+        |> Nx.sum()
+      end)
+    end
+
+    defn grad_sum_pad_put_slice_sin_update(t1, t2) do
+      grad(t2, fn t ->
+        t1
+        |> Nx.cos()
+        |> Nx.put_slice(Nx.sin(t), [1, 2])
+        |> Nx.pad(Nx.mean(Nx.sin(t1)), [{2, 1, 2}, {-1, 2, 0}])
+        |> Nx.sum()
+      end)
+    end
+
+    test "computes gradient of operand" do
+      lhs =
+        grad_mean_put_slice_operand(
+          Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+          Nx.tensor([[10.0, 11.0]])
+        )
+
+      rhs = Nx.tensor([[0.16666667, 0.0, 0.0], [0.16666667, 0.16666667, 0.16666667]])
+
+      compare_tensors!(lhs, rhs)
+
+      lhs =
+        grad_sum_pad_put_slice_cos_operand(
+          Nx.tensor([[1.0, 2.0, 3.0, 4.0], [4.0, 5.0, 6.0, 7.0], [7.0, 8.0, 9.0, 10.0]]),
+          Nx.tensor([[10.0, 11.0], [12.0, 13.0]])
+        )
+
+      rhs =
+        Nx.tensor([
+          [1.84603288, -2.33113245, -3.52359437, -1.47647988],
+          [-2.23328237, 1.92810341, 3.28058181, 2.5758327],
+          [2.5758327, -1.48648336, -3.11302839, -2.86682772]
+        ])
+
+      compare_tensors!(lhs, rhs)
+    end
+
+    test "computes gradient of update" do
+      lhs =
+        grad_mean_put_slice_update(
+          Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+          Nx.tensor([[10.0, 11.0]])
+        )
+
+      rhs = Nx.tensor([[0.16666667, 0.16666667]])
+
+      compare_tensors!(lhs, rhs)
+
+      lhs =
+        grad_sum_pad_put_slice_sin_update(
+          Nx.tensor([[1.0, 2.0, 3.0, 4.0], [4.0, 5.0, 6.0, 7.0], [7.0, 8.0, 9.0, 10.0]]),
+          Nx.tensor([[10.0, 11.0], [12.0, 13.0]])
+        )
+
+      rhs = Nx.tensor([[-0.83907153, 0.0044257], [0.84385396, 0.90744678]])
 
       compare_tensors!(lhs, rhs)
     end
@@ -1804,7 +1960,11 @@ defmodule Nx.Defn.GradTest do
       do: grad(t, &Nx.reduce_max(Nx.select(Nx.greater(&1, 0.0), Nx.exp(&1), Nx.cos(&1))))
 
     defn grad_sum_select_sum(t),
-      do: grad(t, &Nx.sum(Nx.select(Nx.greater(Nx.sum(&1, axes: [0]), 0.0), Nx.sum(&1, axes: [0]), 0.0)))
+      do:
+        grad(
+          t,
+          &Nx.sum(Nx.select(Nx.greater(Nx.sum(&1, axes: [0]), 0.0), Nx.sum(&1, axes: [0]), 0.0))
+        )
 
     test "computes gradient with sum+select" do
       lhs = grad_sum_select(Nx.tensor([[-2.0, 1.0, 0.0, 3.0, -3.0], [1.0, 2.0, 0.0, 5.0, -1.0]]))
@@ -1832,7 +1992,9 @@ defmodule Nx.Defn.GradTest do
     end
 
     test "computes the gradient with sum+select+sum" do
-      lhs = grad_sum_select_sum(Nx.tensor([[-2.0, 1.0, 0.0, 3.0, -3.0], [1.0, 2.0, 0.0, 5.0, -1.0]]))
+      lhs =
+        grad_sum_select_sum(Nx.tensor([[-2.0, 1.0, 0.0, 3.0, -3.0], [1.0, 2.0, 0.0, 5.0, -1.0]]))
+
       rhs = Nx.tensor([[0.0, 1.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0, 1.0, 0.0]])
 
       compare_tensors!(lhs, rhs)

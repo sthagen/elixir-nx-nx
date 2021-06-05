@@ -1,31 +1,172 @@
 defmodule Nx.BinaryBackend.Matrix do
   @moduledoc false
-  @default_eps 1.0e-10
   import Nx.Shared
 
-  def ts(a_data, a_type, b_data, b_type, {rows, rows} = shape, output_type, _opts) do
-    a_matrix = binary_to_matrix(a_data, a_type, shape)
-    b_matrix = binary_to_matrix(b_data, b_type, shape)
+  def ts(a_data, a_type, b_data, b_type, shape, output_type, input_opts) do
+    transform_a = input_opts[:transform_a]
+    lower_input = input_opts[:lower]
 
+    # if transform_a != none, the upper will become lower and vice-versa
+    lower = transform_a == :none == lower_input
+
+    opts = %{
+      lower: lower,
+      left_side: input_opts[:left_side]
+    }
+
+    a_shape =
+      case shape do
+        {rows} -> {rows, rows}
+        shape -> shape
+      end
+
+    a_matrix =
+      a_data
+      |> binary_to_matrix(a_type, a_shape)
+      |> ts_transform_a(transform_a)
+      |> ts_handle_opts(opts, :a)
+
+    b_matrix_or_vec =
+      case shape do
+        {rows, rows} ->
+          b_data |> binary_to_matrix(b_type, shape) |> ts_handle_opts(opts, :b)
+
+        {_rows} ->
+          b_data |> binary_to_vector(b_type) |> ts_handle_opts(opts, :b)
+      end
+
+    result =
+      a_matrix
+      |> do_ts(b_matrix_or_vec, shape)
+      |> ts_handle_opts(opts, :result)
+
+    matrix_to_binary(result, output_type)
+  end
+
+  # For ts_handle_opts/3, we need some theoretical proofs:
+
+  # When lower: false, we need the following procedure
+  # for reusing the lower_triangular engine:
+  #
+  # First, we need to reverse both rows and colums
+  # so we can turn an upper-triangular matrix
+  # into a lower-triangular one.
+  # The result will also be reversed in this case.
+  #
+  # Proof:
+  # For a result [x1, x2, x3.., xn] and a row [a1, a2, a4, ..., an]
+  # we have the corresponding b = a1 * x1 + a2 * x2 + a3 * x3 + ...+ an * xn
+  # Since the addition of a_i * x_i is commutative, by reversing the columns
+  # of a, the yielded x will be reversed.
+  # Furthermore, if we reverse the rows of a, we need to reverse the rows of b
+  # so each row is kept together with it's corresponding result.
+  #
+  # For example, the system:
+  # A = [[a b c], [0 d e], [0 0 f]]
+  # b = [b1, b2, b3, b4]
+  # which yields x = [x1, x2, x3, x4]
+  # is therefore equivalent to:
+  # A = [[f 0 0], [e d 0], [c b a]]
+  # b = [b4, b3, b2, b1]
+  # which yields [x4, x3, x2, x1]
+
+  # For handling left_side: false
+  # Let's notate the system matrix as L when it's a lower triangular matrix
+  # and U when it's upper triangular
+  #
+  # To solve X.L = B, we can then transpose both sides:
+  # transpose(X.L) = transpose(L).X_t = U.X_t = b_t
+  # This equation, in turn, has the same shape (U.X = B) as the one we can solve through
+  # applying `ts_handle_lower_opt` properly, which would yield X_t.
+  # Transposing the result suffices for yielding the final result.
+
+  defp ts_handle_opts(
+         matrix,
+         %{lower: true, left_side: true},
+         _matrix_type
+       ) do
+    # Base case (lower: true, left_side: true)
+    matrix
+  end
+
+  defp ts_handle_opts(
+         matrix,
+         %{lower: false, left_side: true},
+         matrix_type
+       ) do
+    # lower: false, left_side: true
+    # We need to follow the row-col reversing procedure
+    case matrix_type do
+      :a ->
+        matrix
+        |> Enum.map(&Enum.reverse/1)
+        |> Enum.reverse()
+
+      _ ->
+        Enum.reverse(matrix)
+    end
+  end
+
+  defp ts_handle_opts(
+         [row_or_elem | _] = matrix,
+         %{lower: lower, left_side: false},
+         matrix_type
+       ) do
+    # left_side: false
+    # transpose both sides of the equation (yielding X_t as the result)
+    # We need to treat the transposed result as equivalent to lower: not lower, left_side: true,
+    # (not lower) because the triangular matrix is transposed
+
+    new_opts = %{lower: not lower, transform_a: :none, left_side: true}
+
+    case matrix_type do
+      :a ->
+        matrix
+        |> transpose_matrix()
+        |> ts_handle_opts(new_opts, :a)
+
+      :b when is_list(row_or_elem) ->
+        matrix
+        |> transpose_matrix()
+        |> ts_handle_opts(new_opts, :b)
+
+      :b ->
+        ts_handle_opts(matrix, new_opts, :b)
+
+      :result when is_list(row_or_elem) and lower ->
+        matrix
+        |> Enum.reverse()
+        |> transpose_matrix()
+
+      :result when is_list(row_or_elem) and not lower ->
+        transpose_matrix(matrix)
+
+      :result when lower ->
+        Enum.reverse(matrix)
+
+      :result when not lower ->
+        matrix
+    end
+  end
+
+  defp ts_transform_a(matrix, :transpose), do: transpose_matrix(matrix)
+  defp ts_transform_a(matrix, _), do: matrix
+
+  defp do_ts(a_matrix, b_matrix, {rows, rows}) do
     Enum.uniq(1..rows)
     |> Enum.map(fn b_col ->
       b_vector = get_matrix_column(b_matrix, b_col - 1)
 
-      ts(a_matrix, b_vector, 0, [])
+      do_ts(a_matrix, b_vector, 0, [])
     end)
     |> transpose_matrix()
-    |> matrix_to_binary(output_type)
   end
 
-  def ts(a_data, a_type, b_data, b_type, {rows}, output_type, _opts) do
-    a_matrix = binary_to_matrix(a_data, a_type, {rows, rows})
-    b_vector = binary_to_vector(b_data, b_type)
-
-    ts(a_matrix, b_vector, 0, [])
-    |> matrix_to_binary(output_type)
+  defp do_ts(a_matrix, b_vector, {_}) do
+    do_ts(a_matrix, b_vector, 0, [])
   end
 
-  defp ts([row | rows], [b | bs], idx, acc) do
+  defp do_ts([row | rows], [b | bs], idx, acc) do
     value = Enum.fetch!(row, idx)
 
     if value == 0 do
@@ -33,16 +174,16 @@ defmodule Nx.BinaryBackend.Matrix do
     end
 
     y = (b - dot_matrix(row, acc)) / value
-    ts(rows, bs, idx + 1, acc ++ [y])
+    do_ts(rows, bs, idx + 1, acc ++ [y])
   end
 
-  defp ts([], [], _idx, acc), do: acc
+  defp do_ts([], [], _idx, acc), do: acc
 
   def qr(input_data, input_type, input_shape, output_type, m, k, n, opts) do
     {_, input_num_bits} = input_type
 
     mode = opts[:mode]
-    eps = opts[:eps] || @default_eps
+    eps = opts[:eps]
 
     r_matrix =
       if mode == :reduced do
@@ -60,8 +201,7 @@ defmodule Nx.BinaryBackend.Matrix do
     {q_matrix, r_matrix} =
       for i <- 0..(n - 1), reduce: {nil, r_matrix} do
         {q, r} ->
-          # a = r[[i..(k - 1), i]]
-          a = r |> Enum.slice(i..(k - 1)) |> Enum.map(fn row -> Enum.at(row, i) end)
+          a = slice_matrix(r, [i, i], [k - i, 1])
 
           h = householder_reflector(a, k, eps)
 
@@ -79,12 +219,13 @@ defmodule Nx.BinaryBackend.Matrix do
           {q, r}
       end
 
-    {matrix_to_binary(q_matrix, output_type), matrix_to_binary(r_matrix, output_type)}
+    {q_matrix |> approximate_zeros(eps) |> matrix_to_binary(output_type),
+     r_matrix |> approximate_zeros(eps) |> matrix_to_binary(output_type)}
   end
 
   def lu(input_data, input_type, {n, n} = input_shape, p_type, l_type, u_type, opts) do
     a = binary_to_matrix(input_data, input_type, input_shape)
-    eps = opts[:eps] || @default_eps
+    eps = opts[:eps]
 
     {p, a_prime} = lu_validate_and_pivot(a, n)
 
@@ -95,44 +236,42 @@ defmodule Nx.BinaryBackend.Matrix do
     {l, u} =
       for j <- 0..(n - 1), reduce: {zeros_matrix, zeros_matrix} do
         {l, u} ->
-          i_range = if j == 0, do: [0], else: 0..j
-          [l_row_j] = get_matrix_rows(l, [j])
-          l = replace_rows(l, [j], [replace_vector_element(l_row_j, j, 1.0)])
+          l = replace_matrix_element(l, j, j, 1.0)
 
-          u_col_j =
-            for i <- i_range,
-                reduce: get_matrix_column(u, j) do
-              u_col_j ->
-                l_row_slice = slice_matrix(l, [i, 0], [1, i])
+          u =
+            for i <- 0..j, reduce: u do
+              u ->
+                u_slice = slice_matrix(u, [0, j], [i, 1])
+                l_slice = slice_matrix(l, [i, 0], [1, i])
+                sum = dot_matrix(u_slice, l_slice)
+                [a_ij] = get_matrix_elements(a_prime, [[i, j]])
 
-                u_col_slice = slice_vector(u_col_j, 0, i)
+                value = a_ij - sum
 
-                s = dot_matrix(l_row_slice, u_col_slice)
-                [a_elem] = get_matrix_elements(a_prime, [[i, j]])
-                replace_vector_element(u_col_j, i, a_elem - s)
+                if abs(value) < eps do
+                  replace_matrix_element(u, i, j, 0)
+                else
+                  replace_matrix_element(u, i, j, value)
+                end
             end
 
-          u = replace_cols(u, [j], transpose_matrix(u_col_j))
-
-          [u_jj] = get_matrix_elements(u, [[j, j]])
-
           l =
-            if u_jj < eps do
-              l
-            else
-              i_range = if j == n - 1, do: [n - 1], else: j..(n - 1)
+            for i <- j..(n - 1), i != j, reduce: l do
+              l ->
+                u_slice = slice_matrix(u, [0, j], [i, 1])
+                l_slice = slice_matrix(l, [i, 0], [1, i])
+                sum = dot_matrix(u_slice, l_slice)
 
-              for i <- i_range, reduce: l do
-                l ->
-                  u_col_slice = slice_matrix(u, [0, j], [j, 1])
-                  [l_row_i] = get_matrix_rows(l, [i])
-                  s = dot_matrix(u_col_slice, l_row_i)
-                  [a_elem] = get_matrix_elements(a_prime, [[i, j]])
+                [a_ij] = get_matrix_elements(a_prime, [[i, j]])
+                [u_jj] = get_matrix_elements(u, [[j, j]])
 
-                  l_updated_row = replace_vector_element(l_row_i, j, (a_elem - s) / u_jj)
+                value = (a_ij - sum) / u_jj
 
-                  replace_rows(l, [i], [l_updated_row])
-              end
+                if abs(value) < eps do
+                  replace_matrix_element(l, i, j, 0)
+                else
+                  replace_matrix_element(l, i, j, value)
+                end
             end
 
           {l, u}
@@ -140,8 +279,9 @@ defmodule Nx.BinaryBackend.Matrix do
 
     # Transpose because since P is orthogonal, inv(P) = tranpose(P)
     # and we want to return P such that A = P.L.U
-    {p |> transpose_matrix() |> matrix_to_binary(p_type), matrix_to_binary(l, l_type),
-     matrix_to_binary(u, u_type)}
+    {p |> transpose_matrix() |> matrix_to_binary(p_type),
+     l |> approximate_zeros(eps) |> matrix_to_binary(l_type),
+     u |> approximate_zeros(eps) |> matrix_to_binary(u_type)}
   end
 
   defp lu_validate_and_pivot(a, n) do
@@ -187,7 +327,7 @@ defmodule Nx.BinaryBackend.Matrix do
     # [5] - http://www.mymathlib.com/c_source/matrices/linearsystems/singular_value_decomposition.c
     a = binary_to_matrix(input_data, input_type, input_shape)
 
-    eps = opts[:eps] || @default_eps
+    eps = opts[:eps]
     max_iter = opts[:max_iter] || 1000
     {u, d, v} = householder_bidiagonalization(a, input_shape, eps)
 
@@ -220,8 +360,9 @@ defmodule Nx.BinaryBackend.Matrix do
 
     {s, v} = apply_singular_value_corrections(s, v)
 
-    {matrix_to_binary(u, output_type), matrix_to_binary(s, output_type),
-     matrix_to_binary(v, output_type)}
+    {u |> approximate_zeros(eps) |> matrix_to_binary(output_type),
+     s |> approximate_zeros(eps) |> matrix_to_binary(output_type),
+     v |> approximate_zeros(eps) |> matrix_to_binary(output_type)}
   end
 
   defp svd_jacobi_rotation_round(u, d, v, {_, n}, eps) do
@@ -262,15 +403,12 @@ defmodule Nx.BinaryBackend.Matrix do
 
     # This function also sorts singular values from highest to lowest,
     # as this can be convenient.
-
-    # TODO: Use Enum.zip_with on Elixir v1.12
     s
-    |> Enum.zip(transpose_matrix(v))
-    |> Enum.map(fn
-      {singular_value, row} when singular_value < 0 ->
+    |> Enum.zip_with(transpose_matrix(v), fn
+      singular_value, row when singular_value < 0 ->
         {-singular_value, Enum.map(row, &(&1 * -1))}
 
-      {singular_value, row} ->
+      singular_value, row ->
         {singular_value, row}
     end)
     |> Enum.sort_by(fn {s, _} -> s end, &>=/2)
@@ -504,9 +642,7 @@ defmodule Nx.BinaryBackend.Matrix do
   end
 
   defp transpose_matrix(m) do
-    m
-    |> Enum.zip()
-    |> Enum.map(&Tuple.to_list/1)
+    Enum.zip_with(m, & &1)
   end
 
   defp matrix_to_binary([r | _] = m, type) when is_list(r) do
@@ -532,8 +668,6 @@ defmodule Nx.BinaryBackend.Matrix do
     |> binary_to_vector(type)
     |> Enum.chunk_every(num_cols)
   end
-
-  defp slice_vector(a, start, length), do: Enum.slice(a, start, length)
 
   defp slice_matrix(a, [row_start, col_start], [row_length, col_length]) do
     a
@@ -584,5 +718,17 @@ defmodule Nx.BinaryBackend.Matrix do
     |> transpose_matrix()
   end
 
-  defp replace_vector_element(m, row, value), do: List.replace_at(m, row, value)
+  defp replace_matrix_element(m, row, col, value) do
+    updated = m |> Enum.at(row) |> List.replace_at(col, value)
+    List.replace_at(m, row, updated)
+  end
+
+  defp approximate_zeros(matrix, tol) do
+    do_round = fn x -> if abs(x) < tol, do: 0, else: x end
+
+    Enum.map(matrix, fn
+      row when is_list(row) -> Enum.map(row, do_round)
+      e -> do_round.(e)
+    end)
+  end
 end

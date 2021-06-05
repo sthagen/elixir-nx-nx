@@ -229,12 +229,13 @@ defmodule Nx.Defn.Kernel do
   When a tuple is given, a tuple will be returned.
   """
   def grad(var_or_vars, fun) when is_function(fun, 1) do
-    {_value, grad} = Nx.Defn.Grad.transform(var_or_vars, fun)
+    {_value, grad} = Nx.Defn.Grad.transform(var_or_vars, fun, & &1)
     grad
   end
 
   @doc """
-  Computes the value and gradient of the given `var` on `fun`.
+  Computes the value and gradient of the given `var` on `fun`
+  with an optional data transformation.
 
   It returns a tuple with the value and the gradient.
 
@@ -251,9 +252,28 @@ defmodule Nx.Defn.Kernel do
       end
 
   When a tuple is given, a tuple will be returned.
+
+  `transform` allows you to transform the expression before the gradient is
+  calculated. This enables optimizations that reuse parts of expressions. As
+  an example, consider the following objective function:
+
+      defn objective(predict_fn, loss_fn, params, inputs, targets) do
+        preds = predict_fn.(params, inputs)
+        loss = loss_fn.(preds, targets)
+        {preds, loss}
+      end
+
+  You can compute the gradient with respect to just the loss function by applying
+  a transform:
+
+      {{preds, loss}, gradient} = value_and_grad(params, &objective(predict_fn, loss_fn, &1, inputs, targets), &elem(&1, 1))
+
+  `preds` can be re-used to compute other metrics such as accuracy, absolute error,
+  etc. without having to do another forward pass.
   """
-  def value_and_grad(var_or_vars, fun) when is_function(fun, 1) do
-    Nx.Defn.Grad.transform(var_or_vars, fun)
+  def value_and_grad(var_or_vars, fun, transform \\ & &1)
+      when Kernel.and(is_function(fun, 1), is_function(transform, 1)) do
+    Nx.Defn.Grad.transform(var_or_vars, fun, transform)
   end
 
   @doc """
@@ -329,6 +349,9 @@ defmodule Nx.Defn.Kernel do
 
   Ranges are inclusive and both sides must be integers.
 
+  The step of the range is computed based on the first
+  and last values of the range.
+
   ## Examples
 
       iex> t = Nx.tensor([1, 2, 3])
@@ -340,6 +363,23 @@ defmodule Nx.Defn.Kernel do
 
   """
   def first..last, do: Range.new(first, last)
+
+  @doc """
+  Builds a range with step.
+
+  Ranges are inclusive and both sides must be integers.
+
+  ## Examples
+
+      iex> t = Nx.tensor([1, 2, 3])
+      iex> t[1..2//1]
+      #Nx.Tensor<
+        s64[2]
+        [2, 3]
+      >
+
+  """
+  def first..last//step, do: Range.new(first, last, step)
 
   @doc """
   Element-wise addition operator.
@@ -759,7 +799,117 @@ defmodule Nx.Defn.Kernel do
   defmacro if(_pred, other) do
     raise ArgumentError,
           "expected second argument to \"if\" to be a do/else block, " <>
-            "got: #{inspect(Macro.to_string(other))}"
+            "got: #{Macro.to_string(other)}"
+  end
+
+  @doc """
+  Defines a `while` loop.
+
+  It expects the `initial` arguments, a `condition` expression, and
+  a `block`:
+
+      while initial, condition do
+        block
+      end
+
+  `condition` must return a scalar tensor where 0 is false and any
+  other number is true. The given `block` will be executed while
+  `condition` is true. Each invocation of `block` must return a
+  value in the same shape as `initial` arguments.
+
+  `while` will return the value of the last execution of `block`.
+  If `block` is never executed because the initial `condition` is
+  false, it returns `initial`.
+
+  ## Examples
+
+  A simple loop that increments `x` until it is `10` can be written as:
+
+        while x = 0, Nx.less_than(x, 10) do
+          x + 1
+        end
+
+  Similarly, to compute the factorial of `x` using `while`:
+
+        defn factorial(x) do
+          {factorial, _} =
+            while {factorial = 1, x}, Nx.greater(x, 1) do
+              {factorial * x, x - 1}
+            end
+
+          factorial
+        end
+
+  Note `while/3` does not behave as a closure. Therefore, all
+  variables used inside the `while` must be explicitly given
+  as an `initial` value to `while`.
+  """
+  defmacro while(initial, condition, do: block) do
+    {pattern, {vars, values}} = while_arg(initial, {[], []})
+
+    quote do
+      {unquote_splicing(vars)} = {unquote_splicing(values)}
+
+      Nx.Defn.Kernel.__while__(
+        __ENV__.file,
+        __ENV__.line,
+        unquote(pattern),
+        fn unquote(pattern) -> unquote(condition) end,
+        fn unquote(pattern) -> unquote(block) end
+      )
+    end
+  end
+
+  defmacro while(_var, _cond, other) do
+    raise ArgumentError,
+          "expected third argument to \"while\" to be a do-block, " <>
+            "got: #{Macro.to_string(other)}"
+  end
+
+  @doc false
+  defdelegate __while__(file, line, pattern, condition, block), to: Nx.Defn.Expr, as: :while
+
+  defp while_arg({left, right}, prelude) do
+    {left, prelude} = while_arg(left, prelude)
+    {right, prelude} = while_arg(right, prelude)
+    {{left, right}, prelude}
+  end
+
+  defp while_arg({:{}, meta, args}, prelude) do
+    {args, prelude} = Enum.map_reduce(args, prelude, &while_arg/2)
+    {{:{}, meta, args}, prelude}
+  end
+
+  defp while_arg({:=, _meta, [{name, meta, ctx} = var, value]}, {vars, values})
+       when Kernel.and(is_atom(name), is_atom(ctx)) do
+    {{name, [generated: true] ++ meta, ctx}, {[var | vars], [value | values]}}
+  end
+
+  defp while_arg({name, meta, ctx}, prelude)
+       when Kernel.and(is_atom(name), is_atom(ctx)) do
+    {{name, [generated: true] ++ meta, ctx}, prelude}
+  end
+
+  defp while_arg(other, _prelude) do
+    raise ArgumentError, """
+    invalid initial argument for \"while\". Expected a variable, a variable assignment, \
+    or a tuple of the same. For example:
+
+        while x = 0, Nx.less(x, 10) do
+          x + 1
+        end
+
+    Or when using tuples:
+
+        x = 0
+
+        {x, y} =
+          while {x, y = 10}, Nx.not_equal(x, y) do
+            {x + 1, y - 1}
+          end
+
+    Got: #{Macro.to_string(other)}
+    """
   end
 
   @doc """

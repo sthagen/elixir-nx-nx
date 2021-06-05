@@ -1042,7 +1042,6 @@ ERL_NIF_TERM reduce_window(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) 
   xla::XlaComputation* computation;
   std::vector<exla::int64> window_dimensions;
   std::vector<exla::int64> window_strides;
-  // TODO(seanmor5): Not yet supported in Nx
   // std::vector<exla::int64> base_dilations;
   std::vector<exla::int64> window_dilations;
   std::vector<std::pair<exla::int64, exla::int64>> padding_config;
@@ -1156,6 +1155,30 @@ ERL_NIF_TERM map(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   }
 
   xla::XlaOp op = xla::Map(*builder, {*operand}, *computation, dimensions);
+
+  return exla::nif::ok(env, exla::nif::make<xla::XlaOp>(env, op));
+}
+
+ERL_NIF_TERM while_loop(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  xla::XlaComputation* cond_fn;
+  xla::XlaComputation* body_fn;
+  xla::XlaOp* init_value;
+
+  if (!exla::nif::get<xla::XlaComputation>(env, argv[0], cond_fn)) {
+    return exla::nif::error(env, "Unable to get condition computation.");
+  }
+  if (!exla::nif::get<xla::XlaComputation>(env, argv[1], body_fn)) {
+    return exla::nif::error(env, "Unable to get body computation.");
+  }
+  if (!exla::nif::get<xla::XlaOp>(env, argv[2], init_value)) {
+    return exla::nif::error(env, "Unable to get initial value.");
+  }
+
+  xla::XlaOp op = xla::While(*cond_fn, *body_fn, *init_value);
 
   return exla::nif::ok(env, exla::nif::make<xla::XlaOp>(env, op));
 }
@@ -2208,6 +2231,7 @@ static ErlNifFunc exla_funcs[] = {
   {"reduce_window", 7, reduce_window},
   {"select_and_scatter", 8, select_and_scatter},
   {"map", 4, map},
+  {"while", 3, while_loop},
   // Shape/Type Manipulation
   {"broadcast_in_dim", 3, broadcast_in_dim},
   {"reshape", 2, reshape},
