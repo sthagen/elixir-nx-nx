@@ -6,15 +6,6 @@ defmodule Nx.Defn.Compiler do
   @aot_version 1
 
   @doc """
-  Callback for async execution (on top of JIT compilation).
-
-  It receives the same arguments as `c:__jit__/4` but must return
-  a struct that implements the `Nx.Async` protocol.
-  """
-  @callback __async__(key :: term, vars :: [Nx.t()], ([Nx.t()] -> Nx.t()), opts :: keyword) ::
-              Nx.Async.t()
-
-  @doc """
   Callback for JIT compilation.
 
   It receives an opaque `key` used for caching, the function
@@ -262,16 +253,11 @@ defmodule Nx.Defn.Compiler do
     {args, Enum.reverse(vars)}
   end
 
-  ## JIT/Async/Stream
+  ## JIT/Stream
 
   @doc false
   def __jit__(fun, args, opts) do
     runtime(:__jit__, fun, args, opts)
-  end
-
-  @doc false
-  def __async__(fun, args, opts) do
-    runtime(:__async__, fun, args, opts)
   end
 
   defp runtime(callback, fun, args, opts) do
@@ -511,8 +497,20 @@ defmodule Nx.Defn.Compiler do
     {{{:., dot_meta, [fun]}, meta, args}, state}
   end
 
+  defp normalize({{:., _, [Nx.Defn.Kernel, :transform]} = call, meta, [ast, fun]}, state) do
+    {ast, state} = normalize(ast, state)
+
+    fun =
+      Macro.prewalk(fun, fn
+        var when is_var(var) -> normalize_var(var)
+        node -> node
+      end)
+
+    {{call, meta, [ast, fun]}, state}
+  end
+
   defp normalize({{:., dot_meta, [mod, name]}, meta, args}, state)
-       when mod in [Nx, Nx.LinAlg] do
+       when mod in [Nx, Nx.LinAlg, Nx.Defn, Nx.Defn.Kernel] do
     if name in @forbidden_ops do
       mfa = Exception.format_mfa(mod, name, length(args))
       compile_error!(meta, state, "#{mfa} is not allowed inside defn")
@@ -521,27 +519,6 @@ defmodule Nx.Defn.Compiler do
     {args, state} = normalize_list(args, state)
     args = rewrite_args(name, args)
     {{{:., dot_meta, [mod, name]}, meta, args}, state}
-  end
-
-  defp normalize({{:., _, [Nx.Defn.Kernel, name]} = call, meta, args}, state) do
-    {args, state} =
-      case args do
-        [ast, fun] when name == :transform ->
-          {ast, state} = normalize(ast, state)
-
-          fun =
-            Macro.prewalk(fun, fn
-              var when is_var(var) -> normalize_var(var)
-              node -> node
-            end)
-
-          {[ast, fun], state}
-
-        _ ->
-          normalize_list(args, state)
-      end
-
-    {{call, meta, args}, state}
   end
 
   defp normalize({{:., _, [Access, :get]} = call, meta, args}, state) do

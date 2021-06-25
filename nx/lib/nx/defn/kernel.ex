@@ -156,6 +156,33 @@ defmodule Nx.Defn.Kernel do
         e = add [ b, d ] ()
       >
 
+  ## Pitfalls
+
+  Because `transform/2` is invoked inside `defn`, its scope is tied
+  to `defn`. For example, if you do this:
+
+      transform(tensor, fn tensor ->
+        if Nx.shape(tensor) != {2, 2} do
+          raise "bad"
+        end
+      end)
+
+  it won't work because it will use the `!=` operator defined in
+  this module, which only works with tensors, instead of the operator
+  defined in Elixir's `Kernel`. Therefore, we recommend all `transform/2`
+  calls to simply dispatch to a separate function. The example above
+  could be rewritten as:
+
+      transform(tensor, &assert_2x2_shape(&1))
+
+  where:
+
+      defp assert_2x2_shape(tensor) do
+        if Nx.shape(tensor) != {2, 2} do
+          raise "bad"
+        end
+      end
+
   """
   def transform(arg, fun) when is_function(fun, 1) do
     fun.(arg)
@@ -209,71 +236,6 @@ defmodule Nx.Defn.Kernel do
   """
   def rewrite_types(expr, opts) do
     Nx.Defn.Tree.rewrite_types(expr, opts)
-  end
-
-  @doc """
-  Computes the gradient of the given `var` on `fun`.
-
-  ### Examples
-
-      defn tanh_grad(t) do
-        grad(t, &Nx.tanh/&1)
-      end
-
-  To differentiate on multiple vars, pass a tuple as first argument:
-
-      defn tanh_power_grad(a, b) do
-        grad({a, b}, fn {a, b} -> Nx.tanh(a) + Nx.power(b, 2) end)
-      end
-
-  When a tuple is given, a tuple will be returned.
-  """
-  def grad(var_or_vars, fun) when is_function(fun, 1) do
-    {_value, grad} = Nx.Defn.Grad.transform(var_or_vars, fun, & &1)
-    grad
-  end
-
-  @doc """
-  Computes the value and gradient of the given `var` on `fun`
-  with an optional data transformation.
-
-  It returns a tuple with the value and the gradient.
-
-  ### Examples
-
-      defn tanh_grad(t) do
-        value_and_grad(t, &Nx.tanh/&1)
-      end
-
-  To differentiate on multiple vars, pass a tuple as first argument:
-
-      defn tanh_power_grad(a, b) do
-        value_and_grad({a, b}, fn {a, b} -> Nx.tanh(a) + Nx.power(b, 2) end)
-      end
-
-  When a tuple is given, a tuple will be returned.
-
-  `transform` allows you to transform the expression before the gradient is
-  calculated. This enables optimizations that reuse parts of expressions. As
-  an example, consider the following objective function:
-
-      defn objective(predict_fn, loss_fn, params, inputs, targets) do
-        preds = predict_fn.(params, inputs)
-        loss = loss_fn.(preds, targets)
-        {preds, loss}
-      end
-
-  You can compute the gradient with respect to just the loss function by applying
-  a transform:
-
-      {{preds, loss}, gradient} = value_and_grad(params, &objective(predict_fn, loss_fn, &1, inputs, targets), &elem(&1, 1))
-
-  `preds` can be re-used to compute other metrics such as accuracy, absolute error,
-  etc. without having to do another forward pass.
-  """
-  def value_and_grad(var_or_vars, fun, transform \\ & &1)
-      when Kernel.and(is_function(fun, 1), is_function(transform, 1)) do
-    Nx.Defn.Grad.transform(var_or_vars, fun, transform)
   end
 
   @doc """
@@ -490,6 +452,14 @@ defmodule Nx.Defn.Kernel do
       end
 
   """
+  def left and right when Kernel.or(is_boolean(left), is_boolean(right)) do
+    raise ArgumentError,
+          "boolean value passed to Nx.Defn.Kernel.and/2, " <>
+            "values passed to Nx.Defn.Kernel.and/2 must be " <>
+            "tensors or numbers, consider using 1 for true " <>
+            "and 0 for false as an alternative"
+  end
+
   def left and right when Kernel.and(is_number(left), is_number(right)),
     do: logical_and(left, right)
 
@@ -510,6 +480,14 @@ defmodule Nx.Defn.Kernel do
       end
 
   """
+  def left or right when Kernel.or(is_boolean(left), is_boolean(right)) do
+    raise ArgumentError,
+          "boolean value passed to Nx.Defn.Kernel.or/2, " <>
+            "values passed to Nx.Defn.Kernel.or/2 must be " <>
+            "tensors or numbers, consider using 1 for true " <>
+            "and 0 for false as an alternative"
+  end
+
   def left or right when Kernel.and(is_number(left), is_number(right)),
     do: logical_or(left, right)
 
@@ -528,14 +506,22 @@ defmodule Nx.Defn.Kernel do
       defn logical_not(a), do: not a
 
   """
+  def not tensor when is_boolean(tensor) do
+    raise ArgumentError,
+          "boolean value passed to Nx.Defn.Kernel.not/1, " <>
+            "values passed to Nx.Defn.Kernel.not/1 must be " <>
+            "tensors or numbers, consider using 1 for true " <>
+            "and 0 for false as an alternative"
+  end
+
   def not tensor when is_number(tensor), do: logical_not(tensor)
   def not tensor, do: Nx.logical_not(tensor)
 
-  defp logical_and(l, r) when l == 0, do: zero(l, r)
-  defp logical_and(l, r) when r == 0, do: zero(l, r)
+  defp logical_and(l, r) when Kernel.==(l, 0), do: zero(l, r)
+  defp logical_and(l, r) when Kernel.==(r, 0), do: zero(l, r)
   defp logical_and(l, r), do: one(l, r)
 
-  defp logical_or(l, r) when Kernel.and(l == 0, r == 0), do: zero(l, r)
+  defp logical_or(l, r) when Kernel.and(Kernel.==(l, 0), Kernel.==(r, 0)), do: zero(l, r)
   defp logical_or(l, r), do: one(l, r)
 
   defp logical_not(0), do: 1
@@ -634,6 +620,91 @@ defmodule Nx.Defn.Kernel do
     do: Bitwise.>>>(left, right)
 
   def left >>> right, do: Nx.right_shift(left, right)
+
+  @doc """
+  Element-wise equality operation.
+
+  ## Examples
+
+      defn check_equality(a, b) do
+        a == b
+      end
+
+  """
+  def left == right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.==(left, right)
+
+  def left == right, do: Nx.equal(left, right)
+
+  @doc """
+  Element-wise inequality operation.
+
+  ## Examples
+
+      defn check_inequality(a, b) do
+        a != b
+      end
+  """
+  def left != right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.!=(left, right)
+
+  def left != right, do: Nx.not_equal(left, right)
+
+  @doc """
+  Element-wise less than operation.
+
+  ## Examples
+
+      defn check_less_than(a, b) do
+        a < b
+      end
+  """
+  def left < right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.<(left, right)
+
+  def left < right, do: Nx.less(left, right)
+
+  @doc """
+  Element-wise greater than operation.
+
+  ## Examples
+
+      defn check_greater_than(a, b) do
+        a > b
+      end
+  """
+  def left > right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.>(left, right)
+
+  def left > right, do: Nx.greater(left, right)
+
+  @doc """
+  Element-wise less-equal operation.
+
+  ## Examples
+
+      defn check_less_equal(a, b) do
+        a <= b
+      end
+  """
+  def left <= right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.<=(left, right)
+
+  def left <= right, do: Nx.less_equal(left, right)
+
+  @doc """
+  Element-wise greater-equal operation.
+
+  ## Examples
+
+      defn check_greater_equal(a, b) do
+        a >= b
+      end
+  """
+  def left >= right when Kernel.and(is_number(left), is_number(right)),
+    do: Kernel.>=(left, right)
+
+  def left >= right, do: Nx.greater_equal(left, right)
 
   @doc """
   Ensures the first argument is a `keyword` with the given

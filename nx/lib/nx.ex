@@ -264,7 +264,7 @@ defmodule Nx do
   ## Backends
 
   The `Nx` library has built-in support for multiple backends.
-  A tensor is always handled by a backend, the default device
+  A tensor is always handled by a backend, the default backend
   being `Nx.BinaryBackend`, which means the tensor is allocated
   as a binary within the Erlang VM.
 
@@ -1397,8 +1397,10 @@ defmodule Nx do
   @doc """
   Changes the type of a tensor.
 
-  Note it is not possible to cast from floats to integers.
-  Use `round/1`, `floor/1`, and `ceil/1` instead.
+  Note conversion between float and integers truncates the
+  result. Consider using `round/1`, `floor/1`, or `ceil/1`
+  before casting from float to integer to guarantee consistent
+  behavior.
 
   Casting from a higher precision may lead to an overflow
   or underflow, which is platform and compiler dependent
@@ -1418,10 +1420,11 @@ defmodule Nx do
         [0.0, 1.0, 2.0]
       >
 
-  ## Errors
-
       iex> Nx.as_type(Nx.tensor([0.0, 1.0, 2.0], names: [:data]), {:s, 64})
-      ** (ArgumentError) cannot convert tensor from type {:f, 32} to {:s, 64}
+      #Nx.Tensor<
+        s64[data: 3]
+        [0, 1, 2]
+      >
 
   """
   @doc type: :type
@@ -1430,10 +1433,6 @@ defmodule Nx do
     new_type = Nx.Type.normalize!(type)
 
     cond do
-      Nx.Type.float?(tensor.type) and Nx.Type.integer?(new_type) ->
-        raise ArgumentError,
-              "cannot convert tensor from type #{inspect(tensor.type)} to #{inspect(new_type)}"
-
       tensor.type == new_type ->
         tensor
 
@@ -1493,6 +1492,9 @@ defmodule Nx do
   retrieve the current shape from. The shapes must be compatible:
   the product of each dimension in the shape must be equal.
 
+  You may specify one of the dimensions as `:auto`. Nx will compute
+  the size of the dimension based on the original shape and new shape.
+
   Reshaping only changes the tensor metadata, it doesn't copy
   the underlying structure.
 
@@ -1541,20 +1543,28 @@ defmodule Nx do
         ]
       >
 
+  You can use `:auto` to infer dimension sizes. This is useful when you
+  don't know the size some dimension should be ahead of time:
+
+      iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6]])
+      iex> Nx.reshape(t, {:auto, 2}, names: [:x, :y])
+      #Nx.Tensor<
+        s64[x: 3][y: 2]
+        [
+          [1, 2],
+          [3, 4],
+          [5, 6]
+        ]
+      >
   """
   @doc type: :shape
   def reshape(tensor, new_shape, opts \\ []) do
     %T{shape: old_shape} = tensor = to_tensor(tensor)
     new_names = opts[:names] || names!(new_shape)
-    new_shape = shape(new_shape)
+    new_shape = if is_tuple(new_shape), do: new_shape, else: shape(new_shape)
+    new_shape = Nx.Shape.reshape(old_shape, new_shape)
 
     names = Nx.Shape.named_axes!(new_names, new_shape)
-
-    if size(old_shape) != size(new_shape) do
-      raise ArgumentError,
-            "cannot reshape, current shape #{inspect(old_shape)} is not compatible with " <>
-              "new shape #{inspect(new_shape)}"
-    end
 
     if old_shape == new_shape do
       %{tensor | names: names}
@@ -2420,19 +2430,16 @@ defmodule Nx do
 
   Note this function keeps the data in the original backend.
   Therefore, use this function with care, as it may duplicate
-  large amounts of data across backends. Therefore, you must
-  `backend_transfer/2`, unless you explicitly want to copy the
-  data.
+  large amounts of data across backends. Generally speaking,
+  you may want to use `backend_transfer/2`, unless you explicitly
+  want to copy the data.
 
-  For convenience, this function accepts a tuple as argument
-  and copies all tensors in the tuple. This behaviour exists
-  as it is common to transfer data from tuples before and after
-  `defn` functions.
+  For convenience, this function accepts tuples and maps as arguments
+  and copies all tensors in them. This behaviour exists as it is
+  common to transfer data from tuples before and after `defn` functions.
 
   *Note: `Nx.default_backend/1` does not affect the behaviour of
-  this function. That's because `Nx.default_backend/1` configures
-  the backend we want to transfer to, which is typically the
-  backend we are copying *from* in this function.
+  this function.
   """
   @doc type: :backend
   def backend_copy(tuple_or_tensor, backend \\ Nx.Tensor) do
@@ -2445,6 +2452,14 @@ defmodule Nx do
     |> Tuple.to_list()
     |> Enum.map(&backend_copy(&1, backend, opts))
     |> List.to_tuple()
+  end
+
+  defp backend_copy(%T{} = tensor, backend, opts) do
+    impl!(tensor).backend_copy(tensor, backend, opts)
+  end
+
+  defp backend_copy(map, backend, opts) when is_map(map) do
+    Map.new(map, fn {k, v} -> {k, backend_copy(v, backend, opts)} end)
   end
 
   defp backend_copy(tensor, backend, opts) do
@@ -2471,15 +2486,13 @@ defmodule Nx do
   implies the data is copied from the GPU to the Erlang VM
   and then deallocated from the device.
 
-  For convenience, this function accepts a tuple as argument
-  and transfers all tensors in the tuple. This behaviour exists
-  as it is common to transfer data from tuples before and after
-  `defn` functions.
+  For convenience, this function accepts maps and tuples as arguments
+  and transfers all tensors in them. This behaviour exists as it is
+  common to transfer data from tuples and maps before and after `defn`
+  functions.
 
   *Note: `Nx.default_backend/1` does not affect the behaviour of
-  this function. That's because `Nx.default_backend/1` configures
-  the backend we want to transfer to, which is typically the
-  backend we are transferring *from* in this function.
+  this function.
 
   ## Examples
 
@@ -2505,6 +2518,14 @@ defmodule Nx do
     |> List.to_tuple()
   end
 
+  defp backend_transfer(%T{} = tensor, backend, opts) do
+    impl!(tensor).backend_transfer(tensor, backend, opts)
+  end
+
+  defp backend_transfer(map, backend, opts) when is_map(map) do
+    Map.new(map, fn {k, v} -> {k, backend_transfer(v, backend, opts)} end)
+  end
+
   defp backend_transfer(tensor, backend, opts) do
     tensor = to_tensor(tensor)
     impl!(tensor).backend_transfer(tensor, backend, opts)
@@ -2515,10 +2536,9 @@ defmodule Nx do
 
   It returns either `:ok` or `:already_deallocated`.
 
-  For convenience, this function accepts a tuple as argument
-  and deallocates all devices in the tuple. This behaviour
-  exists as it is common to de-allocate data from tuples after
-  `defn` functions.
+  For convenience, this function accepts tuples and maps as arguments
+  and deallocates all devices in them. This behaviour exists as it is
+  common to deallocate data from tuples and maps after `defn` functions.
   """
   @doc type: :backend
   def backend_deallocate(tuple_or_tensor)
@@ -2527,7 +2547,17 @@ defmodule Nx do
     tuple
     |> Tuple.to_list()
     |> Enum.map(&backend_deallocate/1)
-    |> List.to_tuple()
+
+    :ok
+  end
+
+  def backend_deallocate(%T{} = tensor) do
+    impl!(tensor).backend_deallocate(tensor)
+  end
+
+  def backend_deallocate(map) when is_map(map) do
+    Enum.map(map, fn {_, v} -> backend_deallocate(v) end)
+    :ok
   end
 
   def backend_deallocate(tensor) do

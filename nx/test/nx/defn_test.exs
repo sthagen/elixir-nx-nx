@@ -4,7 +4,9 @@ defmodule Nx.DefnTest do
   alias Nx.Tensor, as: T
   alias Nx.Defn.{Expr, Identity, Evaluator}
   alias Nx.DefnTest.Sample
+
   import Nx.Defn
+  doctest Nx.Defn
 
   defmacrop location(plus) do
     file = Path.relative_to_cwd(__CALLER__.file)
@@ -156,6 +158,27 @@ defmodule Nx.DefnTest do
 
       assert %T{data: %Expr{op: :parameter, args: [0]}, type: {:s, 64}} = a
       assert %T{data: %Expr{op: :parameter, args: [1]}, type: {:f, 32}} = b
+    end
+
+    defn verify_maps(map) do
+      transform(map, fn map ->
+        for {k, v} <- map do
+          assert Elixir.Kernel.==(v.shape, {String.to_integer(k)})
+        end
+
+        map
+      end)
+    end
+
+    test "keeps map ordering across different sizes" do
+      size = 50
+      map = for i <- 1..size, into: %{}, do: {"#{i}", Nx.iota({i})}
+      map = verify_maps(map)
+      assert map_size(map) == size
+
+      for {k, v} <- map do
+        assert v.shape == {String.to_integer(k)}
+      end
     end
   end
 
@@ -536,20 +559,43 @@ defmodule Nx.DefnTest do
 
     defn land_two(a, b), do: a and b
 
+    defn land_true(a) do
+      val = transform({}, fn _ -> true end)
+      val and a
+    end
+
     test "and" do
       assert %T{data: %Expr{op: :logical_and, args: [_, _]}} = land_two(1, 2)
+
+      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.and\/2/, fn ->
+        land_true(2)
+      end
     end
 
     defn lor_two(a, b), do: a or b
 
+    defn lor_true(a) do
+      val = transform({}, fn _ -> true end)
+      val or a
+    end
+
     test "or" do
       assert %T{data: %Expr{op: :logical_or, args: [_, _]}} = lor_two(1, 2)
+
+      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.or\/2/, fn ->
+        lor_true(2)
+      end
     end
 
     defn lnot(a), do: not a
+    defn lnot_true(), do: not transform({}, fn _ -> true end)
 
     test "not" do
       assert %T{data: %Expr{op: :equal, args: [_, _]}} = lnot(1)
+
+      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.not\/1/, fn ->
+        lnot_true()
+      end
     end
 
     defn band_two(a, b), do: a &&& b
@@ -594,6 +640,42 @@ defmodule Nx.DefnTest do
 
     test "~~~" do
       assert %T{data: %Expr{op: :bitwise_not, args: [_]}} = unary_bnot(1)
+    end
+
+    defn equality(a, b), do: a == b
+
+    test "==" do
+      assert %T{data: %Expr{op: :equal, args: [_, _]}} = equality(1, 2)
+    end
+
+    defn inequality(a, b), do: a != b
+
+    test "!=" do
+      assert %T{data: %Expr{op: :not_equal, args: [_, _]}} = inequality(1, 2)
+    end
+
+    defn less_than(a, b), do: a < b
+
+    test "<" do
+      assert %T{data: %Expr{op: :less, args: [_, _]}} = less_than(1, 2)
+    end
+
+    defn greater_than(a, b), do: a > b
+
+    test ">" do
+      assert %T{data: %Expr{op: :greater, args: [_, _]}} = greater_than(1, 2)
+    end
+
+    defn less_than_or_equal(a, b), do: a <= b
+
+    test "<=" do
+      assert %T{data: %Expr{op: :less_equal, args: [_, _]}} = less_than_or_equal(1, 2)
+    end
+
+    defn greater_than_or_equal(a, b), do: a >= b
+
+    test ">=" do
+      assert %T{data: %Expr{op: :greater_equal, args: [_, _]}} = greater_than_or_equal(1, 2)
     end
   end
 
@@ -1125,11 +1207,6 @@ defmodule Nx.DefnTest do
   describe "jit" do
     defn defn_jit({a, b}, c), do: a + b - c
 
-    def elixir_jit({a, b}, c) do
-      true = Process.get(Nx.Defn.Compiler) in [Evaluator, Identity]
-      a |> Nx.add(b) |> Nx.subtract(c)
-    end
-
     test "compiles defn function" do
       assert Nx.Defn.jit(&defn_jit/2, [{4, 5}, 3]) == Nx.tensor(6)
       assert Nx.Defn.jit(&defn_jit/2, [{4, 5}, Nx.tensor(3)]) == Nx.tensor(6)
@@ -1137,6 +1214,19 @@ defmodule Nx.DefnTest do
 
       assert %T{data: %Expr{op: :subtract}} =
                Nx.Defn.jit(&defn_jit/2, [{1, 2}, 3], compiler: Identity)
+    end
+
+    @defn_compiler Evaluator
+    defn defn_jit_or_apply(ab, c), do: Nx.Defn.jit_or_apply(&defn_jit/2, [ab, c])
+
+    test "jits or applies" do
+      assert Nx.Defn.jit_or_apply(&defn_jit/2, [{4, 5}, 3]) == Nx.tensor(6)
+      assert defn_jit_or_apply({4, 5}, 3) == Nx.tensor(6)
+    end
+
+    def elixir_jit({a, b}, c) do
+      true = Process.get(Nx.Defn.Compiler) in [Evaluator, Identity]
+      a |> Nx.add(b) |> Nx.subtract(c)
     end
 
     test "compiles elixir function" do
@@ -1163,64 +1253,6 @@ defmodule Nx.DefnTest do
       Nx.default_backend(UnknownBackend)
       assert_raise UndefinedFunctionError, fn -> Nx.Defn.jit(&jit_iota/0, []) end
       assert_raise UndefinedFunctionError, fn -> Nx.Defn.jit(fn -> Nx.iota({3, 3}) end, []) end
-    end
-  end
-
-  describe "async" do
-    defn defn_async({a, b}, c), do: a + b - c
-
-    def elixir_async({a, b}, c) do
-      true = Process.get(Nx.Defn.Compiler) in [Evaluator, Identity]
-      a |> Nx.add(b) |> Nx.subtract(c)
-    end
-
-    test "runs defn function async" do
-      assert %_{} = async = Nx.Defn.async(&defn_async/2, [{4, 5}, 3])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-
-      assert %_{} = async = Nx.Defn.async(&defn_async/2, [{4, 5}, Nx.tensor(3)])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-      assert %_{} = async = Nx.Defn.async(&defn_async(&1, 3), [{4, 5}])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-    end
-
-    test "runs elixir function async" do
-      assert %_{} = async = Nx.Defn.async(&elixir_async/2, [{4, 5}, 3])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-
-      assert %_{} = async = Nx.Defn.async(&elixir_async/2, [{4, 5}, Nx.tensor(3)])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-
-      assert %_{} = async = Nx.Defn.async(&elixir_async(&1, 3), [{4, 5}])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-    end
-
-    @tag :capture_log
-    test "raises on errors" do
-      Process.flag(:trap_exit, true)
-      assert %_{} = async = Nx.Defn.async(fn -> :ok end, [])
-
-      ref = Process.monitor(async.pid)
-      assert_receive {:DOWN, ^ref, _, _, _}
-
-      assert catch_exit(Nx.Async.await!(async)) == {:noproc, {Nx.Async, :await!, [async]}}
-      assert_receive {:EXIT, _, _}
-    end
-
-    test "raises if already awaited" do
-      assert %_{} = async = Nx.Defn.async(&defn_async/2, [{4, 5}, 3])
-      assert Nx.Async.await!(async) == Nx.tensor(6)
-      assert catch_exit(Nx.Async.await!(async)) == {:noproc, {Nx.Async, :await!, [async]}}
-    end
-
-    defn async_iota(), do: Nx.iota({3, 3})
-
-    @tag :capture_log
-    test "uses the default backend on iota" do
-      Process.flag(:trap_exit, true)
-      Nx.default_backend(UnknownBackend)
-      assert %_{} = Nx.Defn.async(&async_iota/0, [])
-      assert_receive {:EXIT, _, {:undef, _}}
     end
   end
 
