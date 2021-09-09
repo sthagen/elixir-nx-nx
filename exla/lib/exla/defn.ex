@@ -14,7 +14,7 @@ defmodule EXLA.Defn do
     comps_and_exprs =
       for {name, fun, vars, options} <- tuples do
         expr = fun.(vars)
-        inputs = inputs(expr)
+        inputs = used_inputs(expr)
         inputs_and_shapes = aot_shapes(vars, 0, inputs)
 
         computation = to_root_computation(name, expr, inputs_and_shapes, options)
@@ -22,7 +22,7 @@ defmodule EXLA.Defn do
       end
 
     {comps, exprs} = Enum.unzip(comps_and_exprs)
-    {_, runtimes} = exprs |> List.to_tuple() |> Tree.composite(%{}, &aot_runtimes/2)
+    {_, {_, runtimes}} = exprs |> List.to_tuple() |> Tree.composite({%{}, %{}}, &aot_runtimes/2)
     aot_options = Keyword.put_new(aot_options, :runtimes, Map.keys(runtimes))
 
     case EXLA.AOT.compile(output_dir, module, comps, aot_options) do
@@ -41,19 +41,19 @@ defmodule EXLA.Defn do
 
   defp aot_shapes([], _i, []), do: []
 
-  defp aot_runtimes(%T{data: %Expr{op: :fun, args: args}}, acc) do
-    [_, expr, _] = args
-    Tree.composite(expr, acc, &aot_runtimes/2)
-  end
+  defp aot_runtimes(%T{data: %Expr{op: op, id: id}} = expr, {seen, runtimes}) do
+    case seen do
+      %{^id => _} ->
+        {expr, {seen, runtimes}}
 
-  defp aot_runtimes(%T{data: %Expr{op: op}} = expr, acc) do
-    acc = if runtime = @aot_runtimes[op], do: Map.put(acc, runtime, true), else: acc
-    aot_runtimes_args(expr, acc)
-  end
+      %{} ->
+        runtimes =
+          if runtime = @aot_runtimes[op],
+            do: Map.put(runtimes, runtime, true),
+            else: runtimes
 
-  defp aot_runtimes_args(expr, acc) do
-    {_, acc} = Tree.traverse_args(expr, acc, &aot_runtimes/2)
-    {expr, acc}
+        Tree.traverse_args(expr, {Map.put(seen, id, true), runtimes}, &aot_runtimes/2)
+    end
   end
 
   @doc false
@@ -73,7 +73,7 @@ defmodule EXLA.Defn do
     {expr, {inputs, outputs}} =
       EXLA.LockedCache.run(expr_key, fn ->
         expr = fun.(vars)
-        {expr, {inputs(expr), outputs(expr)}}
+        {expr, {used_inputs(expr), outputs(expr)}}
       end)
 
     {client_name, options} = Keyword.pop(options, :client, :default)
@@ -94,16 +94,20 @@ defmodule EXLA.Defn do
     {buffers, outputs, executable}
   end
 
-  defp inputs(expr) do
-    {_, inputs} = Tree.composite(expr, %{}, &inputs/2)
-    inputs |> Map.keys() |> Enum.sort()
+  defp used_inputs(expr) do
+    {_, {_, used_inputs}} = Tree.composite(expr, {%{}, %{}}, &used_inputs/2)
+    used_inputs |> Map.keys() |> Enum.sort()
   end
 
-  defp inputs(%T{data: %Expr{op: :parameter, args: [i], context: :root}} = t, acc),
-    do: {t, Map.put(acc, i, true)}
+  defp used_inputs(%T{data: %Expr{op: :parameter, args: [i], context: :root}} = t, {seen, used}),
+    do: {t, {seen, Map.put(used, i, true)}}
 
-  defp inputs(t, acc),
-    do: Tree.traverse_args(t, acc, &inputs/2)
+  defp used_inputs(%T{data: %Expr{id: id}} = t, {seen, used}) do
+    case seen do
+      %{^id => true} -> {t, {seen, used}}
+      %{} -> Tree.traverse_args(t, {Map.put(seen, id, true), used}, &used_inputs/2)
+    end
+  end
 
   defp outputs(%T{} = t),
     do: %{t | data: nil}
@@ -729,6 +733,44 @@ defmodule EXLA.Defn do
     )
   end
 
+  defp to_operator(:take_along_axis, [tensor, indices, axis], _ans, state) do
+    indices_shape = op_shape(indices)
+    indices_rank = tuple_size(indices_shape)
+
+    axes_range = 0..(indices_rank-1)
+
+    index_vector_dim = indices_rank
+    slice_sizes = List.duplicate(1, indices_rank)
+    offset_dims = []
+    collapsed_slice_dims = Enum.to_list(axes_range)
+    start_index_map = Enum.to_list(axes_range)
+
+    indices_exla_shape = EXLA.Op.get_shape(indices)
+
+    iotas =
+      Enum.map(axes_range, fn axis ->
+        EXLA.Op.iota(state.builder, indices_exla_shape, axis)
+      end)
+
+    new_axis_shape = Tuple.append(indices_shape, indices_rank)
+
+    indices =
+      iotas
+      |> List.replace_at(axis, indices)
+      |> Enum.map(&EXLA.Op.reshape(&1, new_axis_shape))
+      |> EXLA.Op.concatenate(indices_rank)
+
+    EXLA.Op.gather(
+      tensor,
+      indices,
+      index_vector_dim,
+      slice_sizes,
+      offset_dims,
+      collapsed_slice_dims,
+      start_index_map
+    )
+  end
+
   defp to_operator(:reverse, [tensor, axes], _ans, _state) do
     EXLA.Op.reverse(tensor, axes)
   end
@@ -950,25 +992,33 @@ defmodule EXLA.Defn do
     end
   end
 
-  defp collect_args(%T{data: %Expr{id: id, op: op}} = expr, ids, pred_ids) do
-    if Map.has_key?(pred_ids, id) or op == :parameter do
-      case ids do
-        %{^id => {_, _, new}} ->
-          {new, ids}
+  defp collect_args(%T{data: %Expr{id: id, op: op}} = expr, {cache, ids}, pred_ids) do
+    cond do
+      Map.has_key?(pred_ids, id) or op == :parameter ->
+        case ids do
+          %{^id => {_, _, new}} ->
+            {new, {cache, ids}}
 
-        %{} ->
-          i = map_size(ids)
-          param = Expr.parameter(expr, i)
-          {param, Map.put(ids, id, {i, expr, param})}
-      end
-    else
-      {args, ids} = Tree.traverse_args(expr, ids, &collect_args(&1, &2, pred_ids))
-      {put_in(expr.data.args, args), ids}
+          %{} ->
+            i = map_size(ids)
+            param = Expr.parameter(expr, i)
+            {param, {cache, Map.put(ids, id, {i, expr, param})}}
+        end
+
+      expr = Map.get(cache, id) ->
+        {expr, {cache, ids}}
+
+      true ->
+        {args, {cache, ids}} =
+          Tree.traverse_args(expr, {cache, ids}, &collect_args(&1, &2, pred_ids))
+
+        expr = put_in(expr.data.args, args)
+        {expr, {Map.put(cache, id, expr), ids}}
     end
   end
 
   defp to_if_branch(bool, expr, ids, state, cache) do
-    {expr, ids_args} = Tree.composite(expr, %{}, &collect_args(&1, &2, ids))
+    {expr, {_cache, ids_args}} = Tree.composite(expr, {%{}, %{}}, &collect_args(&1, &2, ids))
     sorted_ids_args = Enum.sort_by(ids_args, fn {_id, {i, _old, _new}} -> i end)
     subbuilder = subbuilder(state.builder, "if-#{Atom.to_string(bool)}")
 
