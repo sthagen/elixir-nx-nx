@@ -67,6 +67,7 @@ defmodule Nx.Backend do
   @callback put_slice(out :: tensor, tensor, tensor, list) :: tensor
   @callback take(out :: tensor, input :: tensor, indices :: tensor, axis) :: tensor
   @callback take_along_axis(out :: tensor, input :: tensor, indices :: tensor, axis) :: tensor
+  @callback gather(out :: tensor, input :: tensor, indices :: tensor) :: tensor
   @callback concatenate(out :: tensor, tensor, axis) :: tensor
   @callback select(out :: tensor, tensor, tensor, tensor) :: tensor
 
@@ -90,6 +91,7 @@ defmodule Nx.Backend do
   @callback argsort(out :: tensor, tensor, keyword) :: tensor
   @callback scatter_window_max(out :: tensor, tensor, tensor, shape, keyword, tensor) :: tensor
   @callback scatter_window_min(out :: tensor, tensor, tensor, shape, keyword, tensor) :: tensor
+  @callback scatter_add(out :: tensor, tensor, tensor, tensor, keyword) :: tensor
 
   @callback cholesky(out :: tensor, tensor) :: tensor
   @callback lu({p :: tensor, l :: tensor, u :: tensor}, tensor, keyword) :: tensor

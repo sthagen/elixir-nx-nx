@@ -808,6 +808,32 @@ defmodule Nx.Shape do
 
   defp validate_strides!(_, _), do: :ok
 
+  @doc "Validates the input shapes for `Nx.scatter_add/3`"
+  def scatter_add(
+        %Nx.Tensor{shape: target_shape},
+        %Nx.Tensor{shape: indices_shape},
+        %Nx.Tensor{shape: updates_shape}
+      ) do
+    case {indices_shape, updates_shape} do
+      _ when tuple_size(indices_shape) != 2 ->
+        raise(ArgumentError, "indices must be a rank 2 tensor, got: #{tuple_size(indices_shape)}")
+
+      _ when tuple_size(updates_shape) != 1 ->
+        raise(ArgumentError, "updates must be a rank 1 tensor, got: #{tuple_size(updates_shape)}")
+
+      {{_, n}, _} when n != tuple_size(target_shape) ->
+        raise ArgumentError,
+              "expected indices to have shape {*, #{tuple_size(target_shape)}}, got: #{inspect(indices_shape)}"
+
+      {{n, _}, {m}} when n != m ->
+        raise ArgumentError,
+              "expected updates tensor to match the first axis of indices tensor with shape #{inspect(indices_shape)}, got {#{m}}"
+
+      _ ->
+        :ok
+    end
+  end
+
   @doc """
   Output shape after a squeeze operation.
 
@@ -1257,6 +1283,55 @@ defmodule Nx.Shape do
       |> Enum.join(", ")
 
     "{#{shape_template}}"
+  end
+
+  @doc """
+  Returns the shape after a gather.
+
+  ## Examples
+
+      iex> Nx.Shape.gather({2, 3}, {10, 2})
+      {{10}, [nil]}
+
+      iex> Nx.Shape.gather({2, 3}, {4, 5, 2})
+      {{4, 5}, [nil, nil]}
+
+      iex> Nx.Shape.gather({2}, {4, 5, 1})
+      {{4, 5}, [nil, nil]}
+
+      iex> Nx.Shape.gather({2, 2, 2, 2, 2}, {3, 3, 5})
+      {{3, 3}, [nil, nil]}
+
+      iex> Nx.Shape.gather({2, 2, 2}, {3})
+      {{}, []}
+
+  ### Error cases
+
+      iex> Nx.Shape.gather({2, 3}, {})
+      ** (ArgumentError) expected indices rank to be at least 1, got: 0
+
+      iex> Nx.Shape.gather({2, 3}, {1})
+      ** (ArgumentError) expected the last indices dimension size (1) to match the tensor rank (2)
+  """
+  def gather(shape, indices_shape) do
+    shape = Tuple.to_list(shape)
+    rank = length(shape)
+    indices_shape = Tuple.to_list(indices_shape)
+
+    if indices_shape == [] do
+      raise ArgumentError, "expected indices rank to be at least 1, got: 0"
+    end
+
+    {outer_shape, [last_size]} = Enum.split(indices_shape, -1)
+
+    if last_size != rank do
+      raise ArgumentError,
+            "expected the last indices dimension size (#{last_size}) to match the tensor rank (#{rank})"
+    end
+
+    shape = List.to_tuple(outer_shape)
+    names = List.duplicate(nil, tuple_size(shape))
+    {shape, names}
   end
 
   @doc """
