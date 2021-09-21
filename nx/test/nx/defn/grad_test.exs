@@ -2503,6 +2503,335 @@ defmodule Nx.Defn.GradTest do
     end
   end
 
+  describe "take_along_axis" do
+    defn grad_sum_take_along_axis(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.take_along_axis(i, axis: 1)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_take_along_axis_power(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.power(2)
+          |> Nx.take_along_axis(i, axis: 1)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_log_power_take_along_axis_cos(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.cos()
+          |> Nx.take_along_axis(i, axis: 1)
+          |> Nx.power(2)
+          |> Nx.log()
+          |> Nx.sum()
+        end
+      )
+    end
+
+    test "computes gradient" do
+      assert Nx.tensor([
+               [3.0, 0.0],
+               [1.0, 2.0],
+               [1.0, 2.0]
+             ]) ==
+               grad_sum_take_along_axis(
+                 Nx.tensor([
+                   [0, 1],
+                   [2, 3],
+                   [4, 5]
+                 ]),
+                 Nx.tensor([
+                   [0, 0, 0],
+                   [1, 1, 0],
+                   [0, 1, 1]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [0.0, 0.0],
+               [4.0, 12.0],
+               [8.0, 20.0]
+             ]) ==
+               grad_sum_take_along_axis_power(
+                 Nx.tensor([
+                   [0, 1],
+                   [2, 3],
+                   [4, 5]
+                 ]),
+                 Nx.tensor([
+                   [0, 0, 0],
+                   [1, 1, 0],
+                   [0, 1, 1]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [-0.0, -0.0],
+               [4.370079, 0.5701862],
+               [-2.3156426, 13.522059]
+             ]) ==
+               grad_sum_log_power_take_along_axis_cos(
+                 Nx.tensor([
+                   [0, 1],
+                   [2, 3],
+                   [4, 5]
+                 ]),
+                 Nx.tensor([
+                   [0, 0, 0],
+                   [1, 1, 0],
+                   [0, 1, 1]
+                 ])
+               )
+    end
+  end
+
+  describe "take" do
+    defn grad_sum_take(t, i, axis \\ 0) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.take(i, axis: axis)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_take_axis_1_power(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.power(2)
+          |> Nx.take(i, axis: 1)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_log_power_take_axis_1_cos(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.cos()
+          |> Nx.take(i, axis: 1)
+          |> Nx.power(2)
+          |> Nx.log()
+          |> Nx.sum()
+        end
+      )
+    end
+
+    test "computes gradient" do
+      assert Nx.tensor([
+               [2.0, 2.0, 2.0, 2.0],
+               [2.0, 2.0, 2.0, 2.0],
+               [6.0, 6.0, 6.0, 6.0]
+             ]) ==
+               grad_sum_take(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [0, 1, 2, 2, 2],
+                   [0, 1, 2, 2, 2]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [0.0, 4.0, 24.0, 0.0],
+               [16.0, 20.0, 72.0, 0.0],
+               [32.0, 36.0, 120.0, 0.0]
+             ]) ==
+               grad_sum_take_axis_1_power(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [0, 1, 2, 2, 2],
+                   [0, 1, 2, 2, 2]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [-0.0, -6.2296305, 26.220474, -0.0],
+               [-4.631285, 13.522059, 3.4920743, -0.0],
+               [27.198847, 1.8092626, -7.7803297, 0.0]
+             ]) ==
+               grad_sum_log_power_take_axis_1_cos(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [0, 1, 2, 2, 2],
+                   [0, 1, 2, 2, 2]
+                 ])
+               )
+    end
+
+    test "works with more dimensions" do
+      assert Nx.tensor([
+               [3.0, 3.0, 3.0, 3.0],
+               [3.0, 3.0, 3.0, 3.0],
+               [3.0, 3.0, 3.0, 3.0]
+             ]) ==
+               grad_sum_take(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [
+                     [[0], [1], [2]],
+                     [[2], [1], [0]],
+                     [[0], [1], [2]]
+                   ]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [1.0, 2.0, 1.0, 0.0],
+               [1.0, 2.0, 1.0, 0.0],
+               [1.0, 2.0, 1.0, 0.0]
+             ]) ==
+               grad_sum_take(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [
+                     [[0], [1]],
+                     [[2], [1]]
+                   ]
+                 ]),
+                 1
+               )
+    end
+  end
+
+  describe "gather" do
+    defn grad_sum_gather(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.gather(i)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_gather_power(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.power(2)
+          |> Nx.gather(i)
+          |> Nx.sum()
+        end
+      )
+    end
+
+    defn grad_sum_log_power_gather_cos(t, i) do
+      grad(
+        t,
+        fn t ->
+          t
+          |> Nx.cos()
+          |> Nx.gather(i)
+          |> Nx.power(2)
+          |> Nx.log()
+          |> Nx.sum()
+        end
+      )
+    end
+
+    test "computes gradient" do
+      assert Nx.tensor([
+               [1.0, 3.0, 1.0, 0.0],
+               [1.0, 1.0, 0.0, 0.0],
+               [1.0, 0.0, 1.0, 3.0]
+             ]) ==
+               grad_sum_gather(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [
+                     [[0, 0], [0, 1], [0, 2]],
+                     [[2, 0], [1, 0], [0, 1]],
+                     [[0, 1], [1, 1], [2, 2]],
+                     [[2, 3], [2, 3], [2, 3]]
+                   ]
+                 ])
+               )
+
+      assert Nx.tensor([[0.0, 6.0, 4.0, 0.0], [8.0, 10.0, 0.0, 0.0], [16.0, 0.0, 20.0, 66.0]]) ==
+               grad_sum_gather_power(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [
+                     [[0, 0], [0, 1], [0, 2]],
+                     [[2, 0], [1, 0], [0, 1]],
+                     [[0, 1], [1, 1], [2, 2]],
+                     [[2, 3], [2, 3], [2, 3]]
+                   ]
+                 ])
+               )
+
+      assert Nx.tensor([
+               [-0.0, -9.34444522857666, 4.370079040527344, -0.0],
+               [-2.3156425952911377, 6.7610297203063965, 0.0, -0.0],
+               [13.5994234085083, -0.0, -1.2967215776443481, 1355.705078125]
+             ]) ==
+               grad_sum_log_power_gather_cos(
+                 Nx.tensor([
+                   [0, 1, 2, 3],
+                   [4, 5, 6, 7],
+                   [8, 9, 10, 11]
+                 ]),
+                 Nx.tensor([
+                   [
+                     [[0, 0], [0, 1], [0, 2]],
+                     [[2, 0], [1, 0], [0, 1]],
+                     [[0, 1], [1, 1], [2, 2]],
+                     [[2, 3], [2, 3], [2, 3]]
+                   ]
+                 ])
+               )
+    end
+  end
+
   describe "not implemented" do
     defn grad_reduce(t), do: grad(t, &Nx.reduce(&1, 0, fn x, y -> x + y end))
 

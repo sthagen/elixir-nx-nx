@@ -29,8 +29,8 @@ EXLA relies on the [XLA](https://github.com/elixir-nx/xla) package to provide th
 
   * Missing Dependencies
     * Some Erlang installs do not include some of the dependencies needed to compile the EXLA NIF. You may need to install `erlang-dev` separately.
-  * EXLA
-    * Make sure you use `:exla` as a `:github` dependency and not as a `:path` dependency to avoid rebuilds
+  * Incompatible protocol buffer versions
+    * If you have `protoc` installed on your machine, it may conflict with the `protoc` precompiled inside XLA. Uninstall, unlink, or remove `protoc` from your path to continue.
 
 ## Usage
 
@@ -103,12 +103,14 @@ docker run -it \
 
 With CUDA enabled:
 
+*Note: XLA_TARGET should match your CUDA version. See: https://github.com/elixir-nx/xla#xla_target*
+ 
 ```shell
 docker run -it \
   -v $PWD:$PWD \
   -e TEST_TMPDIR=$PWD/tmp/bazel_cache \
   -e BUILD_CACHE=$PWD/tmp/xla_extension_cache \
-  -e XLA_TARGET=cuda \
+  -e XLA_TARGET=cuda102 \
   -e EXLA_TARGET=cuda \
   -w $PWD \
   --gpus=all \
