@@ -20,7 +20,7 @@ defmodule Torchx.Backend do
         iex> Nx.tensor([-1.5, -0.5, 0.5, 1.5], backend: Torchx.Backend) |> Nx.round()
         #Nx.Tensor<
           f32[4]
-          [-2.0, 0.0, 0.0, 2.0]
+          [-2.0, -0.0, 0.0, 2.0]
         >
 
     While binary backend will do:
@@ -133,9 +133,8 @@ defmodule Torchx.Backend do
   end
 
   @impl true
-  def to_binary(_tensor, _limit \\ nil) do
-    raise "operation to_binary is not supported on Torchx.Backend. " <>
-            "You must first transfer the tensor to Elixir by calling Nx.backend_transfer/1"
+  def to_binary(tensor, limit) do
+    Torchx.to_blob(from_nx(tensor), limit)
   end
 
   @impl true
@@ -267,6 +266,28 @@ defmodule Torchx.Backend do
     Torchx.argmin(from_nx(t), axis, keep_axes) |> to_nx(out)
   end
 
+  @impl true
+  def all?(%T{} = out, %T{} = t, opts) do
+    axes =
+      case opts[:axes] do
+        axes when length(axes) in 0..1 ->
+          axes
+
+        nil ->
+          []
+
+        _axes ->
+          raise ArgumentError, ":axes option only accepts a single axis per call"
+      end
+
+    keep_axes = opts[:keep_axes] || false
+
+    t
+    |> from_nx()
+    |> Torchx.all(axes, keep_axes)
+    |> to_nx(out)
+  end
+
   ## Ops
 
   binary_ops =
@@ -317,7 +338,7 @@ defmodule Torchx.Backend do
 
   unary_ops =
     [:exp, :expm1, :log, :log1p, :logistic, :cos, :sin, :tan, :cosh, :sinh] ++
-      [:tanh, :acos, :asin, :atan, :acosh, :asinh, :atanh, :sqrt, :rsqrt, :cbrt] ++
+      [:tanh, :acos, :asin, :atan, :acosh, :asinh, :atanh, :sqrt, :rsqrt] ++
       [:erf, :erfc, :erf_inv, :abs, :bitwise_not, :ceil, :floor, :negate, :round, :sign]
 
   for op <- unary_ops do
@@ -394,7 +415,7 @@ defmodule Torchx.Backend do
 
   @doc false
   def to_nx({device, ref} = device_ref, %T{type: type, shape: shape} = t)
-       when is_atom(device) and is_reference(ref) do
+      when is_atom(device) and is_reference(ref) do
     %{t | data: %__MODULE__{ref: check_shape_and_type!(device_ref, shape, type)}}
   end
 
@@ -484,19 +505,32 @@ defmodule Torchx.Backend do
     )
   end
 
+  ## Functionality we can't provide
+
+  not_possible = [bitcast: 2, map: 4, reduce: 5, reduce_window: 6]
+
+  for {fun, arity} <- not_possible do
+    args = Macro.generate_arguments(arity, __MODULE__)
+
+    @impl true
+    def unquote(fun)(unquote_splicing(args)) do
+      raise "operation #{unquote(fun)} is not supported on Torchx.Backend"
+    end
+  end
+
   ## All remaining callbacks
 
   funs = Nx.Backend.behaviour_info(:callbacks) -- Module.definitions_in(__MODULE__, :def)
 
   @doc false
-  def __unimplemented__, do: unquote(funs)
+  def __unimplemented__, do: unquote(funs ++ not_possible)
 
   for {fun, arity} <- funs do
     args = Macro.generate_arguments(arity, __MODULE__)
 
     @impl true
     def unquote(fun)(unquote_splicing(args)) do
-      raise "operation #{unquote(fun)} is not supported on Torchx.Backend"
+      raise "operation #{unquote(fun)} is not yet supported on Torchx.Backend"
     end
   end
 end

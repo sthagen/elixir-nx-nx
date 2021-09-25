@@ -166,6 +166,7 @@ defmodule Torchx do
   deftensor sum(tensor, axes, keep_axes)
   deftensor argmax(tensor, axis, keep_axes)
   deftensor argmin(tensor, axis, keep_axes)
+  deftensor all(tensor, axes, keep_axes)
 
   ## Binary ops
 
@@ -223,7 +224,6 @@ defmodule Torchx do
   deftensor atanh(tensor)
   deftensor sqrt(tensor)
   deftensor rsqrt(tensor)
-  deftensor cbrt(tensor)
   deftensor erf(tensor)
   deftensor erfc(tensor)
   deftensor erf_inv(tensor)
