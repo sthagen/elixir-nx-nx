@@ -277,17 +277,24 @@ defmodule Nx do
         Nx.exp(t) / Nx.sum(Nx.exp(t))
       end
 
-  The `keep_on_device: true` run option will keep the tensor on
-  the backend. You can transfer it back to a binary tensor by
-  calling `backend_transfer/2` or `backend_copy/2`. If you don't
-  intend to use the data for some reason, you can explicitly call
-  `backend_deallocate/1` to deallocate it.
+  The `keep_on_device: true` run option will keep the tensor
+  allocated elsewhere and not as an Elixir binary. You can transfer
+  it back to a binary tensor by calling `backend_transfer/2` or
+  `backend_copy/2`. If you don't intend to use the data for some
+  reason, you can explicitly call `backend_deallocate/1` to
+  deallocate it.
 
   However, most often backends are used to provide a completely
   different implementation of tensor operations, often accelerated
   to the GPU. In such cases, you want to guarantee all tensors
-  are allocated in the new backend. This can be done by calling
-  `Nx.default_backend/1`:
+  are allocated in the new backend. This can be done by configuring
+  your runtime:
+
+      # config/runtime.exs
+      import Config
+      config :nx, default_backend: Lib.CustomBackend
+
+  Or by calling `Nx.default_backend/1`:
 
       Nx.default_backend({Lib.CustomBackend, device: :cuda})
 
@@ -2444,7 +2451,6 @@ defmodule Nx do
   ## Backend API
 
   @backend_key {Nx, :default_backend}
-  @backend_default {Nx.BinaryBackend, []}
 
   @doc """
   Sets the current process default backend to `backend` with the given `opts`.
@@ -2462,14 +2468,15 @@ defmodule Nx do
 
   """
   def default_backend(backend) do
-    Process.put(@backend_key, backend!(backend)) || @backend_default
+    Process.put(@backend_key, backend!(backend)) ||
+      backend!(Application.fetch_env!(:nx, :default_backend))
   end
 
   @doc """
   Gets the default backend for the current process.
   """
   def default_backend() do
-    Process.get(@backend_key) || @backend_default
+    Process.get(@backend_key) || backend!(Application.fetch_env!(:nx, :default_backend))
   end
 
   @doc """
@@ -7378,44 +7385,39 @@ defmodule Nx do
 
   ### Examples
 
-      iex> t = Nx.iota({900})
-      iex> t = Nx.reshape(t, {2, 15, 30})
-      iex> Nx.slice(t, [0, 6, 2], [2, 1, 3])
+      iex> Nx.slice(Nx.tensor([1, 2, 3, 4, 5, 6]), [0], [3])
       #Nx.Tensor<
-        s64[2][1][3]
+        s64[3]
+        [1, 2, 3]
+      >
+
+      iex> Nx.slice(Nx.tensor([1, 2, 3, 4, 5, 6]), [0], [6], strides: [2])
+      #Nx.Tensor<
+        s64[3]
+        [1, 3, 5]
+      >
+
+      iex> Nx.slice(Nx.tensor([[1, 2], [3, 4], [5, 6]]), [0, 0], [3, 2], strides: [2, 1])
+      #Nx.Tensor<
+        s64[2][2]
         [
-          [
-            [182, 183, 184]
-          ],
-          [
-            [632, 633, 634]
-          ]
+          [1, 2],
+          [5, 6]
         ]
       >
 
-      iex> t = Nx.iota({900})
-      iex> t = Nx.reshape(t, {2, 15, 30})
-      iex> Nx.slice(t, [1, 4, 10], [1, 1, 10], strides: 2)
+  Strides can also be a number that applies to all dimensions:
+
+      iex> Nx.slice(Nx.tensor([[1, 2], [3, 4], [5, 6]]), [0, 0], [3, 2], strides: 2)
       #Nx.Tensor<
-        s64[1][1][5]
+        s64[2][1]
         [
-          [
-            [580, 582, 584, 586, 588]
-          ]
+          [1],
+          [5]
         ]
       >
 
-      iex> t = Nx.iota({900})
-      iex> t = Nx.reshape(t, {2, 15, 30})
-      iex> Nx.slice(t, [1, 4, 10], [1, 1, 10], strides: [1, 2, 3])
-      #Nx.Tensor<
-        s64[1][1][4]
-        [
-          [
-            [580, 583, 586, 589]
-          ]
-        ]
-      >
+  A more complex example:
 
       iex> t = Nx.iota({900})
       iex> t = Nx.reshape(t, {2, 15, 30})
@@ -7428,6 +7430,16 @@ defmodule Nx do
             [161, 164, 167],
             [191, 194, 197]
           ]
+        ]
+      >
+
+  The `start_indices` list can be made of scalar tensors:
+
+      iex> Nx.slice(Nx.tensor([[1, 2, 3], [4, 5, 6]]), [Nx.tensor(1), Nx.tensor(2)], [1, 1])
+      #Nx.Tensor<
+        s64[1][1]
+        [
+          [6]
         ]
       >
 
@@ -7445,14 +7457,6 @@ defmodule Nx do
         [
           [0.0, 0.0, 0.0],
           [1.0, 1.0, 1.0]
-        ]
-      >
-
-      iex> Nx.slice(Nx.tensor([[1, 2, 3], [4, 5, 6]]), [Nx.tensor(1), Nx.tensor(2)], [1, 1])
-      #Nx.Tensor<
-        s64[1][1]
-        [
-          [6]
         ]
       >
 
