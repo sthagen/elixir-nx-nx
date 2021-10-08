@@ -158,20 +158,12 @@ defmodule Torchx.Backend do
     # torch::split returns a chunk with smaller size if the
     # tensor is not fully divisible by the batch_size.
     # We need to drop the last chunk in this case
-    batched =
-      case Torchx.split(to_batch, batch_size) do
-        batches when remainder != 0 ->
-          batches |> Enum.take(num_batches) |> Enum.map(&to_nx(&1, out))
+    case Torchx.split(to_batch, batch_size) do
+      batches when remainder != 0 ->
+        batches |> Enum.take(num_batches) |> Enum.map(&to_nx(&1, out))
 
-        batches ->
-          Enum.map(batches, &to_nx(&1, out))
-      end
-
-    if leftover == :repeat and remainder != 0 do
-      {h, [t]} = Enum.split(batched, num_batches - 1)
-      [t | h]
-    else
-      batched
+      batches ->
+        Enum.map(batches, &to_nx(&1, out))
     end
   end
 
@@ -297,17 +289,85 @@ defmodule Torchx.Backend do
   end
 
   @impl true
+  def take(out, t, i, axis) do
+    axes_range = 0..(Nx.rank(t) - 1)//1
+
+    indices_shape =
+      axes_range
+      |> Enum.flat_map(fn
+        ^axis -> Tuple.to_list(i.shape)
+        _ -> [1]
+      end)
+      |> List.to_tuple()
+
+    idx_tiling =
+      t.shape
+      |> Tuple.to_list()
+      |> Enum.with_index(fn
+        _x, ^axis ->
+          List.duplicate(1, Nx.rank(i))
+
+        x, _ ->
+          x
+      end)
+      |> List.flatten()
+
+    indices_for_axis =
+      i
+      |> Nx.reshape(indices_shape)
+      |> Nx.tile(idx_tiling)
+
+    num_elements = Tuple.product(indices_for_axis.shape)
+
+    axis_offset = Nx.rank(i) - 1
+
+    indices =
+      axes_range
+      |> Enum.map(fn
+        ^axis ->
+          Nx.reshape(indices_for_axis, {num_elements, 1})
+
+        current when current < axis ->
+          indices_for_axis
+          |> Nx.iota(axis: current, backend: __MODULE__)
+          |> Nx.reshape({num_elements, 1})
+
+        current when current > axis ->
+          indices_for_axis
+          |> Nx.iota(axis: current + axis_offset, backend: __MODULE__)
+          |> Nx.reshape({num_elements, 1})
+      end)
+      |> Nx.concatenate(axis: 1)
+
+    gather(out, t, indices)
+  end
+
+  @impl true
   def gather(out, tensor, idx) do
     # Nx provides indices as a tensor of shape {*, input_dims}
-    # However, torch expects indices to be a 1-dim tensor of indices along a given axis.
+    # However, torch expects indices to be a tensor of indices along a given axis.
     # As such, we need to convert the indices tensor to linear indices.
     # See the function below for an explanation on the offsets calculation
 
-    linear_indices_offsets = linear_indices_offsets(tensor.shape)
+    linear_indices_offsets =
+      tensor.shape
+      |> linear_indices_offsets()
+      |> from_nx()
+
+    lin_idx_num_elements =
+      idx.shape |> Tuple.delete_at(tuple_size(idx.shape) - 1) |> Tuple.product()
+
+    linear_indices =
+      idx
+      |> from_nx()
+      |> Torchx.tensordot(linear_indices_offsets, [tuple_size(idx.shape) - 1], [0])
+      |> Torchx.reshape({lin_idx_num_elements})
 
     tensor
     |> from_nx()
-    |> Torchx.gather(from_nx(idx), from_nx(linear_indices_offsets), out.shape)
+    |> Torchx.reshape({Tuple.product(tensor.shape)})
+    |> Torchx.gather(linear_indices, 0)
+    |> Torchx.reshape(out.shape)
     |> to_nx(out)
   end
 
@@ -331,7 +391,7 @@ defmodule Torchx.Backend do
       |> Tuple.to_list()
       |> Enum.reverse()
       |> Enum.reduce({[], 1}, fn x, {acc, multiplier} ->
-        {[[multiplier] | acc], multiplier * x}
+        {[multiplier | acc], multiplier * x}
       end)
 
     Nx.tensor(offsets_list, backend: __MODULE__)
@@ -341,7 +401,7 @@ defmodule Torchx.Backend do
   def take_along_axis(out, tensor, idx, axis) do
     tensor
     |> from_nx()
-    |> Torchx.take_along_axis(from_nx(idx), axis)
+    |> Torchx.gather(from_nx(idx), axis)
     |> to_nx(out)
   end
 
@@ -629,7 +689,7 @@ defmodule Torchx.Backend do
 
   ## Functionality we can't provide
 
-  not_possible = [bitcast: 2, map: 4, reduce: 5, reduce_window: 6]
+  not_possible = [bitcast: 2, map: 4, population_count: 2, reduce: 5, reduce_window: 6]
 
   for {fun, arity} <- not_possible do
     args = Macro.generate_arguments(arity, __MODULE__)
