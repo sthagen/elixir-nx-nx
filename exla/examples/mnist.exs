@@ -1,8 +1,6 @@
 defmodule MNIST do
   import Nx.Defn
 
-  @default_defn_compiler EXLA
-
   defn init_random_params do
     w1 = Nx.random_normal({784, 128}, 0.0, 0.1, names: [:input, :layer])
     b1 = Nx.random_normal({128}, 0.0, 0.1, names: [:layer])
@@ -130,12 +128,12 @@ defmodule MNIST do
         epoch_avg_loss =
           epoch_avg_loss
           |> Nx.backend_transfer()
-          |> Nx.to_scalar()
+          |> Nx.to_number()
 
         epoch_avg_acc =
           epoch_avg_acc
           |> Nx.backend_transfer()
-          |> Nx.to_scalar()
+          |> Nx.to_number()
 
         IO.puts("Epoch #{epoch} Time: #{time / 1_000_000}s")
         IO.puts("Epoch #{epoch} average loss: #{inspect(epoch_avg_loss)}")
@@ -145,6 +143,8 @@ defmodule MNIST do
     end
   end
 end
+
+EXLA.set_as_nx_default([:tpu, :cuda, :rocm, :host])
 
 {train_images, train_labels} =
   MNIST.download('train-images-idx3-ubyte.gz', 'train-labels-idx1-ubyte.gz')

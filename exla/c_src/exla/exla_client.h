@@ -20,27 +20,16 @@ namespace exla {
 
 class ExlaClient;
 
-class ExlaDevice {
- public:
-  ExlaDevice(xla::PjRtDevice* device, ExlaClient* client) : device_(device),
-                                                            client_(client) {}
-
- private:
-  xla::PjRtDevice* device_;
-  ExlaClient* client_;
-};
-
 class ExlaBuffer {
  public:
   ExlaBuffer(std::unique_ptr<xla::PjRtBuffer> buffer,
              bool can_be_released_after_run_ = false);
 
-  xla::PjRtBuffer* buffer() { return buffer_.get(); }
-
   bool release_after_run() { return can_be_released_after_run_; }
-
-  xla::StatusOr<ERL_NIF_TERM> ToBinary(ErlNifEnv* env);
-
+  xla::PjRtBuffer* buffer() { return buffer_.get(); }
+  xla::StatusOr<ExlaBuffer*> CopyToDevice(xla::PjRtDevice * dst_device);
+  xla::StatusOr<ERL_NIF_TERM> ToBinary(ErlNifEnv* env, exla::int64 size);
+  xla::Status BlockHostUntilReady();
   xla::Status Deallocate();
 
  private:
@@ -58,7 +47,6 @@ class ExlaExecutable {
 
   xla::StatusOr<ERL_NIF_TERM> Run(ErlNifEnv* env,
                                   ERL_NIF_TERM arguments,
-                                  bool keep_on_device,
                                   int device_id);
 
  private:
@@ -75,8 +63,7 @@ class ExlaClient {
 
   xla::PjRtClient* client() { return client_.get(); }
 
-  // Compiles the given computation with the given compile
-  // options
+  // Compiles the given computation with the given compile options
   xla::StatusOr<ExlaExecutable*> Compile(const xla::XlaComputation&,
                                          std::vector<xla::Shape*> argument_layouts,
                                          xla::ExecutableBuildOptions& options,
@@ -87,10 +74,11 @@ class ExlaClient {
                                               int device_id,
                                               bool can_be_released_after_run);
 
-  std::vector<ExlaDevice*> GetDevices();
-
   // TODO(seanmor5): This is device logic and should be refactored
-  xla::Status TransferToInfeed(int device_id, ErlNifBinary binary, const xla::Shape& shape);
+  xla::Status TransferToInfeed(ErlNifEnv* env,
+                               ERL_NIF_TERM data,
+                               const xla::Shape& shape,
+                               int device_id);
 
   xla::StatusOr<ERL_NIF_TERM> TransferFromOutfeed(ErlNifEnv* env, int device_id, xla::Shape& shape);
 

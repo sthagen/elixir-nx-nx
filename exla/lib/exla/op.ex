@@ -12,18 +12,31 @@ defmodule EXLA.Op do
   ## Constructors
 
   @doc """
-  Creates a scalar constant.
+  Creates a numeric constant.
   """
+  def constant_r0(%Builder{} = builder, %Complex{re: r, im: i}, dtype = {:c, size}) do
+    data =
+      case size do
+        64 ->
+          <<r::32-float-native, i::32-float-native>>
+
+        128 ->
+          <<r::64-float-native, i::64-float-native>>
+      end
+
+    constant_from_binary(builder, data, Shape.make_shape(dtype, {}))
+  end
+
   def constant_r0(%Builder{ref: builder}, value, dtype = {_, _}) when is_number(value) do
-    value = cast_scalar!(dtype, value)
+    value = cast_number!(dtype, value)
     ref = EXLA.NIF.constant_r0(builder, value, Shape.dtype_to_charlist(dtype)) |> unwrap!()
     %Op{builder: builder, ref: ref}
   end
 
-  defp cast_scalar!({:pred, 8}, 0), do: 0
-  defp cast_scalar!({:pred, 8}, 1), do: 1
-  defp cast_scalar!({:pred, 8}, n), do: raise("cannot cast #{inspect(n)} to {:pred, 8}")
-  defp cast_scalar!(type, scalar), do: Nx.Type.cast_scalar!(type, scalar)
+  defp cast_number!({:pred, 8}, 0), do: 0
+  defp cast_number!({:pred, 8}, 1), do: 1
+  defp cast_number!({:pred, 8}, n), do: raise("cannot cast #{inspect(n)} to {:pred, 8}")
+  defp cast_number!(type, number), do: Nx.Type.cast_number!(type, number)
 
   @doc """
   Creates a n-dimensional constant from binary `data` with `shape`.
@@ -509,7 +522,7 @@ defmodule EXLA.Op do
     %Op{builder: builder, ref: ref}
   end
 
-  def reduce_window(
+  def window_reduce(
         %Op{builder: builder, ref: operand},
         %Op{builder: builder, ref: init_value},
         %Computation{ref: reduction},
@@ -520,7 +533,7 @@ defmodule EXLA.Op do
       )
       when is_tuple(window_dimensions) and is_list(window_strides) and is_list(window_dilations) do
     ref =
-      EXLA.NIF.reduce_window(
+      EXLA.NIF.window_reduce(
         operand,
         init_value,
         reduction,
@@ -637,6 +650,21 @@ defmodule EXLA.Op do
     %Op{builder: builder, ref: ref}
   end
 
+  def conjugate(%Op{builder: builder, ref: operand}) do
+    ref = EXLA.NIF.conj(operand) |> unwrap!()
+    %Op{builder: builder, ref: ref}
+  end
+
+  def real(%Op{builder: builder, ref: operand}) do
+    ref = EXLA.NIF.real(operand) |> unwrap!()
+    %Op{builder: builder, ref: ref}
+  end
+
+  def imag(%Op{builder: builder, ref: operand}) do
+    ref = EXLA.NIF.imag(operand) |> unwrap!()
+    %Op{builder: builder, ref: ref}
+  end
+
   def cholesky(%Op{builder: builder, ref: operand}) do
     ref = EXLA.NIF.cholesky(operand) |> unwrap!()
     %Op{builder: builder, ref: ref}
@@ -736,10 +764,9 @@ defmodule EXLA.Op do
     %Op{builder: builder, ref: ref}
   end
 
-  def outfeed(%Op{builder: builder, ref: operand}, %Op{builder: builder, ref: token}, %Shape{
-        ref: shape
-      }) do
-    ref = EXLA.NIF.outfeed(operand, token, shape) |> unwrap!()
+  def outfeed(%Op{builder: builder, ref: operand}, %Op{builder: builder, ref: token}) do
+    shape_ref = EXLA.NIF.get_shape(builder, operand) |> unwrap!()
+    ref = EXLA.NIF.outfeed(operand, token, shape_ref) |> unwrap!()
     %Op{builder: builder, ref: ref}
   end
 

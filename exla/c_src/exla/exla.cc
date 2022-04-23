@@ -43,14 +43,6 @@ void free_exla_client(ErlNifEnv* env, void * obj) {
   }
 }
 
-void free_exla_device(ErlNifEnv* env, void * obj) {
-  exla::ExlaDevice** device = reinterpret_cast<exla::ExlaDevice**>(obj);
-  if (*device != nullptr) {
-    delete *device;
-    *device = nullptr;
-  }
-}
-
 void free_exla_buffer(ErlNifEnv* env, void * obj) {
   exla::ExlaBuffer** buffer = reinterpret_cast<exla::ExlaBuffer**>(obj);
   if (*buffer != nullptr) {
@@ -81,9 +73,6 @@ static int open_resources(ErlNifEnv* env) {
     return -1;
   }
   if (!exla::nif::open_resource<exla::ExlaBuffer*>(env, mod, "ExlaBuffer", free_exla_buffer)) {
-    return -1;
-  }
-  if (!exla::nif::open_resource<exla::ExlaDevice*>(env, mod, "ExlaDevice", free_exla_device)) {
     return -1;
   }
   return 1;
@@ -208,17 +197,18 @@ ERL_NIF_TERM binary_to_device_mem(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 
   EXLA_ASSIGN_OR_RETURN_NIF(exla::ExlaBuffer* buffer,
     (*client)->BufferFromBinary(bin, *shape, device_id, false), env);
-
+  EXLA_EFFECT_OR_RETURN_NIF(buffer->BlockHostUntilReady(), env);
   return exla::nif::ok(env, exla::nif::make<exla::ExlaBuffer*>(env, buffer));
 }
 
 ERL_NIF_TERM read_device_mem(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 2) {
+  if (argc != 3) {
     return exla::nif::error(env, "Bad argument count.");
   }
 
   exla::ExlaClient** client;
   exla::ExlaBuffer** buffer;
+  exla::int64 size;
 
   if (!exla::nif::get<exla::ExlaClient*>(env, argv[0], client)) {
     return exla::nif::error(env, "Unable to get client.");
@@ -226,8 +216,11 @@ ERL_NIF_TERM read_device_mem(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
   if (!exla::nif::get<exla::ExlaBuffer*>(env, argv[1], buffer)) {
     return exla::nif::error(env, "Unable to get buffer.");
   }
+  if (!exla::nif::get(env, argv[2], &size)) {
+    return exla::nif::error(env, "Unable to get size.");
+  }
 
-  EXLA_ASSIGN_OR_RETURN_NIF(ERL_NIF_TERM binary, (*buffer)->ToBinary(env), env);
+  EXLA_ASSIGN_OR_RETURN_NIF(ERL_NIF_TERM binary, (*buffer)->ToBinary(env, size), env);
 
   return exla::nif::ok(env, binary);
 }
@@ -527,10 +520,10 @@ ERL_NIF_TERM gather(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   xla::XlaOp* operand;
   xla::XlaOp* start_indices;
   exla::int64 index_vector_dim;
-  std::vector<xla::int64> slice_sizes;
-  std::vector<xla::int64> offset_dims;
-  std::vector<xla::int64> collapsed_slice_dims;
-  std::vector<xla::int64> start_index_map;
+  std::vector<exla::int64> slice_sizes;
+  std::vector<exla::int64> offset_dims;
+  std::vector<exla::int64> collapsed_slice_dims;
+  std::vector<exla::int64> start_index_map;
 
   if (!exla::nif::get<xla::XlaOp>(env, argv[0], operand)) {
     return exla::nif::error(env, "Unable to get operand.");
@@ -1103,7 +1096,7 @@ ERL_NIF_TERM variadic_reduce(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]
   return exla::nif::ok(env, exla::nif::make<xla::XlaOp>(env, op));
 }
 
-ERL_NIF_TERM reduce_window(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+ERL_NIF_TERM window_reduce(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 7) {
     return exla::nif::error(env, "Bad argument count.");
   }
@@ -1680,7 +1673,7 @@ ERL_NIF_TERM sort(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
     return exla::nif::error(env, "Unable to get dimension.");
   }
 
-  xla::XlaOp op = xla::Sort({*operand}, *comparator, dimension);
+  xla::XlaOp op = xla::Sort({*operand}, *comparator, dimension, true);
 
   return exla::nif::ok(env, exla::nif::make<xla::XlaOp>(env, op));
 }
@@ -1704,7 +1697,7 @@ ERL_NIF_TERM variadic_sort(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) 
     return exla::nif::error(env, "Unable to get dimension.");
   }
 
-  xla::XlaOp op = xla::Sort(operands, *comparator, dimension);
+  xla::XlaOp op = xla::Sort(operands, *comparator, dimension, true);
 
   return exla::nif::ok(env, exla::nif::make<xla::XlaOp>(env, op));
 }
@@ -1959,15 +1952,14 @@ ERL_NIF_TERM create_token(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
 }
 
 ERL_NIF_TERM transfer_to_infeed(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 4) {
+  if (argc != 3) {
     return exla::nif::error(env, "Bad argument count.");
   }
 
   // TODO(seanmor5): Maybe this should be a reference to the device?
   exla::ExlaClient** client;
   int device_id;
-  ErlNifBinary data;
-  xla::Shape* shape;
+  ERL_NIF_TERM data = argv[2];
 
   if (!exla::nif::get<exla::ExlaClient*>(env, argv[0], client)) {
     return exla::nif::error(env, "Unable to get client.");
@@ -1975,30 +1967,41 @@ ERL_NIF_TERM transfer_to_infeed(ErlNifEnv* env, int argc, const ERL_NIF_TERM arg
   if (!exla::nif::get(env, argv[1], &device_id)) {
     return exla::nif::error(env, "Unable to get device ID.");
   }
-  if (!exla::nif::get_binary(env, argv[2], &data)) {
-    return exla::nif::error(env, "Unable to get data.");
-  }
-  if (!exla::nif::get<xla::Shape>(env, argv[3], shape)) {
-    return exla::nif::error(env, "Unable to get shape.");
-  }
 
-  xla::Status transfer_status = (*client)->TransferToInfeed(device_id, data, *shape);
+  ERL_NIF_TERM head, tail;
+  while (enif_get_list_cell(env, data, &head, &tail)) {
+    const ERL_NIF_TERM* terms;
+    int count;
+    xla::Shape* shape;
 
-  if(!transfer_status.ok()) {
-    return exla::nif::error(env, transfer_status.error_message().c_str());
+    if (!enif_get_tuple(env, head, &count, &terms) && count != 2) {
+      return exla::nif::error(env, "Unable to binary-shape tuple.");
+    }
+
+    if (!exla::nif::get<xla::Shape>(env, terms[1], shape)) {
+      return exla::nif::error(env, "Unable to get shape.");
+    }
+
+    xla::Status transfer_status = (*client)->TransferToInfeed(env, terms[0], *shape, device_id);
+
+    if(!transfer_status.ok()) {
+      return exla::nif::error(env, transfer_status.error_message().c_str());
+    }
+
+    data = tail;
   }
 
   return exla::nif::ok(env);
 }
 
 ERL_NIF_TERM transfer_from_outfeed(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 3) {
+  if (argc != 5) {
     return exla::nif::error(env, "Bad argument count.");
   }
 
   exla::ExlaClient** client;
   int device_id;
-  xla::Shape* shape;
+  ErlNifPid pid;
 
   if (!exla::nif::get<exla::ExlaClient*>(env, argv[0], client)) {
     return exla::nif::error(env, "Unable to get client.");
@@ -2006,13 +2009,65 @@ ERL_NIF_TERM transfer_from_outfeed(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
   if (!exla::nif::get(env, argv[1], &device_id)) {
     return exla::nif::error(env, "Unable to get device ID.");
   }
-  if (!exla::nif::get<xla::Shape>(env, argv[2], shape)) {
-    return exla::nif::error(env, "Unable to get shape.");
+  if (!enif_get_local_pid(env, argv[3], &pid)) {
+    return exla::nif::error(env, "Unable to get pid.");
   }
 
-  EXLA_ASSIGN_OR_RETURN_NIF(ERL_NIF_TERM ret_term, (*client)->TransferFromOutfeed(env, device_id, *shape), env);
+  ERL_NIF_TERM data = argv[2];
+  ERL_NIF_TERM head, tail;
+  while (enif_get_list_cell(env, data, &head, &tail)) {
+    xla::Shape* shape;
 
-  return exla::nif::ok(env, ret_term);
+    if (!exla::nif::get<xla::Shape>(env, head, shape)) {
+      return exla::nif::error(env, "Unable to get shape.");
+    }
+
+    ErlNifEnv* penv = enif_alloc_env();
+    ERL_NIF_TERM ref = enif_make_copy(penv, argv[4]);
+    auto statusor = (*client)->TransferFromOutfeed(penv, device_id, *shape);
+
+    if (!statusor.ok()) {
+      enif_clear_env(penv);
+      return exla::nif::error(env, statusor.status().error_message().c_str());
+    }
+
+    ERL_NIF_TERM msg = std::move(statusor.ValueOrDie());
+
+    if(!enif_send(env, &pid, penv, enif_make_tuple(penv, 2, ref, msg))) {
+      enif_clear_env(penv);
+    }
+
+    data = tail;
+  }
+
+  return exla::nif::ok(env);
+}
+
+ERL_NIF_TERM copy_buffer_to_device(ErlNifEnv * env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::ExlaClient** client;
+  exla::ExlaBuffer** buffer;
+  int device_id;
+
+  if (!exla::nif::get<exla::ExlaClient*>(env, argv[0], client)) {
+    return exla::nif::error(env, "Unable to get client.");
+  }
+  if (!exla::nif::get<exla::ExlaBuffer*>(env, argv[1], buffer)) {
+    return exla::nif::error(env, "Unable to get buffer.");
+  }
+  if (!exla::nif::get(env, argv[2], &device_id)) {
+    return exla::nif::error(env, "Unable to get device ID.");
+  }
+
+  EXLA_ASSIGN_OR_RETURN_NIF(xla::PjRtDevice * device,
+    (*client)->client()->LookupDevice(device_id), env);
+  EXLA_ASSIGN_OR_RETURN_NIF(exla::ExlaBuffer * buf,
+    (*buffer)->CopyToDevice(device), env);
+
+  return exla::nif::ok(env, exla::nif::make<exla::ExlaBuffer*>(env, buf));
 }
 
 // ExlaClient Functions
@@ -2071,30 +2126,6 @@ ERL_NIF_TERM get_device_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
   int device_count = (*client)->client()->device_count();
 
   return exla::nif::ok(env, exla::nif::make(env, device_count));
-}
-
-ERL_NIF_TERM get_devices(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 1) {
-    return exla::nif::error(env, "Bad argument count.");
-  }
-
-  exla::ExlaClient** client;
-
-  if (!exla::nif::get<exla::ExlaClient*>(env, argv[0], client)) {
-    return exla::nif::error(env, "Unable to get client.");
-  }
-
-  std::vector<exla::ExlaDevice*> devices = (*client)->GetDevices();
-  int num_devices = devices.size();
-
-  std::vector<ERL_NIF_TERM> terms;
-  terms.reserve(num_devices);
-  for (auto device : devices) {
-    ERL_NIF_TERM term = exla::nif::make<exla::ExlaDevice*>(env, device);
-    terms.push_back(term);
-  }
-
-  return exla::nif::ok(env, enif_make_list_from_array(env, &terms[0], num_devices));
 }
 
 ERL_NIF_TERM get_supported_platforms(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -2174,13 +2205,12 @@ ERL_NIF_TERM compile(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
 // ExlaExecutable Functions
 
 ERL_NIF_TERM run(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
-  if (argc != 5) {
+  if (argc != 4) {
     return exla::nif::error(env, "Bad argument count.");
   }
 
   exla::ExlaClient** client;
   exla::ExlaExecutable** executable;
-  bool keep_on_device;
   int device_id;
 
   ERL_NIF_TERM arguments = argv[2];
@@ -2191,15 +2221,12 @@ ERL_NIF_TERM run(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   if (!exla::nif::get<exla::ExlaExecutable*>(env, argv[1], executable)) {
     return exla::nif::error(env, "Unable to get executable.");
   }
-  if (!exla::nif::get(env, argv[3], &keep_on_device)) {
-    return exla::nif::error(env, "Unable to get keep on device flag.");
-  }
-  if (!exla::nif::get(env, argv[4], &device_id)) {
+  if (!exla::nif::get(env, argv[3], &device_id)) {
     return exla::nif::error(env, "Unable to get device ID.");
   }
 
   EXLA_ASSIGN_OR_RETURN_NIF(ERL_NIF_TERM term,
-     (*executable)->Run(env, arguments, keep_on_device, device_id), env);
+     (*executable)->Run(env, arguments, device_id), env);
 
   return term;
 }
@@ -2240,18 +2267,18 @@ static ErlNifFunc exla_funcs[] = {
   {"get_gpu_client", 2, get_gpu_client},
   {"get_tpu_client", 0, get_tpu_client},
   {"get_device_count", 1, get_device_count},
-  {"get_devices", 1, get_devices},
   {"get_supported_platforms", 0, get_supported_platforms},
   {"compile", 7, compile},
   // ExlaBuffer
   {"binary_to_device_mem", 4, binary_to_device_mem, ERL_NIF_DIRTY_JOB_IO_BOUND},
-  {"read_device_mem", 2, read_device_mem, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"read_device_mem", 3, read_device_mem, ERL_NIF_DIRTY_JOB_IO_BOUND},
   {"deallocate_device_mem", 1, deallocate_device_mem, ERL_NIF_DIRTY_JOB_IO_BOUND},
-  {"transfer_to_infeed", 4, transfer_to_infeed},
-  {"transfer_from_outfeed", 3, transfer_from_outfeed},
+  {"transfer_to_infeed", 3, transfer_to_infeed, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"transfer_from_outfeed", 5, transfer_from_outfeed, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"copy_buffer_to_device", 3, copy_buffer_to_device, ERL_NIF_DIRTY_JOB_IO_BOUND},
   // ExlaExecutable
-  {"run_io", 5, run, ERL_NIF_DIRTY_JOB_IO_BOUND},
-  {"run_cpu", 5, run, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+  {"run_io", 4, run, ERL_NIF_DIRTY_JOB_IO_BOUND},
+  {"run_cpu", 4, run, ERL_NIF_DIRTY_JOB_CPU_BOUND},
   // Shape
   {"make_shape", 2, make_shape},
   {"make_token_shape", 0, make_token_shape},
@@ -2339,7 +2366,7 @@ static ErlNifFunc exla_funcs[] = {
   // Functional Ops
   {"reduce", 4, reduce},
   {"variadic_reduce", 5, variadic_reduce},
-  {"reduce_window", 7, reduce_window},
+  {"window_reduce", 7, window_reduce},
   {"select_and_scatter", 8, select_and_scatter},
   {"scatter", 8, scatter},
   {"map", 4, map},

@@ -90,12 +90,6 @@ defmodule Torchx.Macro do
 end
 
 defmodule Torchx do
-  # TODO: Add moduledoc that documents the types and devices.
-  # Make it clear they are Torchx specific and that Torchx.Backend
-  # provides the mapping between Nx to the underlying Torchx types.
-
-  # TODO: Automatically download libtorch like we do for esbuild/xla.
-
   use Torchx.Macro
   alias Torchx.NIF
 
@@ -162,13 +156,23 @@ defmodule Torchx do
   deftensor as_strided(tensor, size, strides, offset)
   deftensor concatenate(tensors, axis)
   deftensor gather(tensor_input, tensor_indices, axis)
+  deftensor indexed_add(tensor_input, tensor_indices, tensor_updates, axis)
   deftensor argsort(tensor, axis, is_descending)
+  deftensor flip(tensor, axis)
+  deftensor unfold(tensor, dimension, size, step)
+  deftensor put(tensor_input, tensor_index, tensor_source)
+  deftensor where(tensorA, tensorB, tensorC)
 
   ## Aggregation
 
   deftensor sum(tensor, axes, keep_axes)
+  deftensor product(tensor)
+  deftensor product(tensor, axes, keep_axes)
+  deftensor any(tensor)
+  deftensor any(tensor, axes, keep_axes)
   deftensor argmax(tensor, axis, keep_axes)
   deftensor argmin(tensor, axis, keep_axes)
+  deftensor all(tensor)
   deftensor all(tensor, axes, keep_axes)
 
   ## Binary ops
@@ -197,12 +201,15 @@ defmodule Torchx do
   deftensor logical_and(tensorA, tensorB)
   deftensor logical_or(tensorA, tensorB)
   deftensor logical_xor(tensorA, tensorB)
+  deftensor logical_not(tensorA)
 
   deftensor bitwise_and(tensorA, tensorB)
   deftensor bitwise_or(tensorA, tensorB)
   deftensor bitwise_xor(tensorA, tensorB)
 
-  deftensor outer(tensorA, tensorB)
+  deftensor amax(tensor, axes, keep_axes)
+  deftensor amin(tensor, axes, keep_axes)
+
   deftensor tensordot(tensorA, tensorB, axesA, axesB)
   deftensor matmul(tensorA, tensorB)
 
@@ -213,6 +220,8 @@ defmodule Torchx do
   deftensor log(tensor)
   deftensor log1p(tensor)
   deftensor logistic(tensor)
+  deftensor view_as_real(tensor)
+  deftensor conjugate(tensor)
   deftensor cos(tensor)
   deftensor sin(tensor)
   deftensor tan(tensor)
@@ -230,6 +239,7 @@ defmodule Torchx do
   deftensor erf(tensor)
   deftensor erfc(tensor)
   deftensor erf_inv(tensor)
+  deftensor cbrt(tensor)
 
   deftensor abs(tensor)
   deftensor bitwise_not(tensor)
@@ -239,12 +249,26 @@ defmodule Torchx do
   deftensor round(tensor)
   deftensor sign(tensor)
 
+  deftensor pad(tensor, config, constant)
+
   ## LinAlg
 
   deftensor cholesky(tensor)
   deftensor cholesky(tensor, upper)
+  deftensor eigh(tensor)
   deftensor qr(tensor)
   deftensor qr(tensor, reduced)
+  deftensor svd(tensor)
+  deftensor svd(tensor, full_matrices)
+  deftensor lu(tensor)
+  deftensor triangular_solve(tensor_a, tensor_b, transpose, upper)
+  deftensor determinant(tensor)
+  deftensor sort(tensor, axis, descending)
+  deftensor clip(tensor, tensor_min, tensor_max)
+  deftensor solve(tensor_a, tensor_b)
+
+  deftensor conv(tensor_input, tensor_kernel, strides, padding, dilation, transposed, groups)
+  deftensor max_pool_3d(tensor_input, kernel_size, strides, padding, dilation)
 
   ## Dirty non-tensor return values
 
@@ -312,6 +336,7 @@ defmodule Torchx do
     {id, index}
   end
 
+  defp unwrap!(:ok), do: :ok
   defp unwrap!({:ok, result}), do: result
   defp unwrap!({:error, error}), do: raise("Torchx: " <> List.to_string(error))
 

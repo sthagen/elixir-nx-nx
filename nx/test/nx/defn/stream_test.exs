@@ -34,7 +34,7 @@ defmodule Nx.Defn.StreamTest do
   end
 
   test "converts accumulator to tensors" do
-    assert %_{} = stream = Nx.Defn.stream(fn -> :unused end, [1, {2, 3}])
+    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> {0, 0} end, [1, {2, 3}])
     assert Nx.Stream.done(stream) == {Nx.tensor(2), Nx.tensor(3)}
   end
 
@@ -49,7 +49,7 @@ defmodule Nx.Defn.StreamTest do
   @tag :capture_log
   test "raises on errors" do
     Process.flag(:trap_exit, true)
-    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> :bad end, [1, 2])
+    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> 0 end, [1, 2])
 
     assert Nx.Stream.send(stream, 1) == :ok
     assert catch_exit(Nx.Stream.recv(stream))
@@ -59,7 +59,7 @@ defmodule Nx.Defn.StreamTest do
   end
 
   test "raises if stream is not compatible on send" do
-    assert %_{} = stream = Nx.Defn.stream(fn -> :unused end, [1, {2, 3}])
+    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> {0, 0} end, [1, {2, 3}])
 
     assert_raise ArgumentError,
                  ~r/Nx stream expected a tensor of type, shape, and names on send/,
@@ -77,7 +77,7 @@ defmodule Nx.Defn.StreamTest do
   end
 
   test "raises if already done" do
-    assert %_{} = stream = Nx.Defn.stream(fn -> :bad end, [1, 2])
+    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> 0 end, [1, 2])
     assert Nx.Stream.done(stream) == Nx.tensor(2)
     assert {:noproc, _} = catch_exit(Nx.Stream.done(stream))
   end
@@ -93,7 +93,7 @@ defmodule Nx.Defn.StreamTest do
 
   test "raises if stream is done when recving" do
     Process.flag(:trap_exit, true)
-    assert %_{} = stream = Nx.Defn.stream(fn -> :bad end, [1, 2])
+    assert %_{} = stream = Nx.Defn.stream(fn _, _ -> 0 end, [1, 2])
 
     assert capture_log(fn ->
              Task.start_link(fn -> Nx.Stream.recv(stream) end)
@@ -113,5 +113,22 @@ defmodule Nx.Defn.StreamTest do
     assert %_{} = stream = Nx.Defn.stream(&stream_iota/2, args)
     assert Nx.Stream.send(stream, hd(args))
     assert_receive {:EXIT, _, {:undef, _}}, 500
+  end
+
+  defn container_stream(%Container{a: a} = elem, %Container{b: b} = acc) do
+    {%{elem | a: a + b}, %{acc | b: a + b}}
+  end
+
+  test "container in and out" do
+    args = [%Container{a: 0, b: 0, c: :reset, d: :elem}, %Container{a: 0, b: 0, d: :acc}]
+    %_{} = stream = Nx.Defn.stream(&container_stream/2, args)
+
+    assert Nx.Stream.send(stream, %Container{a: 1, b: -1}) == :ok
+    assert Nx.Stream.recv(stream) == %Container{a: Nx.tensor(1), b: Nx.tensor(-1), d: :elem}
+
+    assert Nx.Stream.send(stream, %Container{a: 2, b: -2}) == :ok
+    assert Nx.Stream.recv(stream) == %Container{a: Nx.tensor(3), b: Nx.tensor(-2), d: :elem}
+
+    assert Nx.Stream.done(stream) == %Container{a: Nx.tensor(0), b: Nx.tensor(3), d: :acc}
   end
 end

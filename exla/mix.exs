@@ -9,14 +9,18 @@ defmodule EXLA.MixProject do
       app: :exla,
       name: "EXLA",
       version: @version,
-      elixir: "~> 1.12-dev",
+      elixir: "~> 1.13",
+      elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       docs: docs(),
       # We want to always trigger XLA compilation when XLA_BUILD is set,
       # otherwise its Makefile will run only upon the initial compilation
       compilers:
         if(xla_build?(), do: [:xla], else: []) ++ [:exla, :elixir_make] ++ Mix.compilers(),
-      aliases: aliases()
+      aliases: aliases(),
+      make_env: %{
+        "MIX_BUILD_EMBEDDED" => "#{Mix.Project.config()[:build_embedded]}"
+      }
     ]
   end
 
@@ -27,7 +31,7 @@ defmodule EXLA.MixProject do
       mod: {EXLA.Application, []},
       env: [
         clients: [
-          default: [],
+          host: [platform: :host],
           cuda: [platform: :cuda],
           rocm: [platform: :rocm],
           tpu: [platform: :tpu]
@@ -36,14 +40,18 @@ defmodule EXLA.MixProject do
     ]
   end
 
+  defp elixirc_paths(:test), do: ~w(lib test/support)
+  defp elixirc_paths(_), do: ~w(lib)
+
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
       {:nx, path: "../nx"},
-      {:xla, "~> 0.2.0", runtime: false},
+      {:complex, "~> 0.3.0", github: "elixir-nx/complex", branch: "main"},
+      {:xla, "~> 0.3.0", runtime: false},
       {:elixir_make, "~> 0.6", runtime: false},
       {:benchee, "~> 1.0", only: :dev},
-      {:ex_doc, "~> 0.23", only: :dev}
+      {:ex_doc, "~> 0.28.3", only: :dev}
     ]
   end
 

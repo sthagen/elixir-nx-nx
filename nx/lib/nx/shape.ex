@@ -722,8 +722,18 @@ defmodule Nx.Shape do
 
   defp do_conv_spatial_dims([], [], []), do: []
 
-  defp do_conv_spatial_dims([cur | spatial], [f | filters], [s | strides]),
-    do: [floor((cur - f) / s) + 1 | do_conv_spatial_dims(spatial, filters, strides)]
+  defp do_conv_spatial_dims([cur | spatial], [f | filters], [s | strides]) do
+    dim = floor((cur - f) / s) + 1
+
+    if dim <= 0 do
+      raise ArgumentError,
+            "conv would result in empty tensor which is" <>
+              " not currently supported in Nx, please open an" <>
+              " issue if you'd like this behavior to change"
+    else
+      [dim | do_conv_spatial_dims(spatial, filters, strides)]
+    end
+  end
 
   @doc """
   Output shape after a pooling or reduce window operation.
@@ -808,8 +818,8 @@ defmodule Nx.Shape do
 
   defp validate_strides!(_, _), do: :ok
 
-  @doc "Validates the input shapes for `Nx.scatter_add/3`"
-  def scatter_add(
+  @doc "Validates the input shapes for `Nx.indexed_add/3`"
+  def indexed_add(
         %Nx.Tensor{shape: target_shape},
         %Nx.Tensor{shape: indices_shape},
         %Nx.Tensor{shape: updates_shape}
@@ -1219,6 +1229,81 @@ defmodule Nx.Shape do
   end
 
   @doc """
+  Returns shape if valid and raises error if not.
+  """
+  def take_diagonal(shape)
+
+  def take_diagonal({len, breadth}) do
+    {len, breadth}
+  end
+
+  def take_diagonal(invalid_shape) do
+    raise ArgumentError,
+          "take_diagonal/2 expects tensor of rank 2, got tensor of rank: #{tuple_size(invalid_shape)}"
+  end
+
+  @doc """
+  Returns shape if valid and raises error if not.
+  """
+  def make_diagonal(shape)
+
+  def make_diagonal({len}) do
+    {len}
+  end
+
+  def make_diagonal(invalid_shape) do
+    raise ArgumentError,
+          "make_diagonal/2 expects tensor of rank 1, got tensor of rank: #{tuple_size(invalid_shape)}"
+  end
+
+  @doc """
+  Validates an offset to extract or create a diagonal (tensor) for given shape
+
+  ## Examples
+
+      iex> Nx.Shape.validate_diag_offset!({3, 4}, 1)
+      :ok
+
+      iex> Nx.Shape.validate_diag_offset!({3, 4}, -1)
+      :ok
+
+  ## Error cases
+
+    iex> Nx.Shape.validate_diag_offset!({3, 4}, 4)
+    ** (ArgumentError) offset must be less than length of axis 1 when positive, got: 4
+
+    iex> Nx.Shape.validate_diag_offset!({3, 4}, -3)
+    ** (ArgumentError) absolute value of offset must be less than length of axis 0 when negative, got: -3
+
+    iex> Nx.Shape.validate_diag_offset!({3, 3, 3}, 0)
+    ** (ArgumentError) expected shape of rank 2 to be given, got shape of rank: 3
+  """
+  def validate_diag_offset!(shape, offset)
+
+  def validate_diag_offset!({len, breadth}, offset) do
+    cond do
+      offset >= 0 and offset < breadth ->
+        :ok
+
+      offset >= 0 ->
+        raise ArgumentError,
+              "offset must be less than length of axis 1 when positive, got: #{inspect(offset)}"
+
+      offset < 0 and -offset < len ->
+        :ok
+
+      offset < 0 ->
+        raise ArgumentError,
+              "absolute value of offset must be less than length of axis 0 when negative, got: #{inspect(offset)}"
+    end
+  end
+
+  def validate_diag_offset!(shape, _offset) when is_tuple(shape) do
+    raise ArgumentError,
+          "expected shape of rank 2 to be given, got shape of rank: #{tuple_size(shape)}"
+  end
+
+  @doc """
   Returns the shape and names after a `take_along_axis` operation is performed.
 
   In practice, `axis` in `shape` gets replaced by `indices_shape`.
@@ -1577,6 +1662,17 @@ defmodule Nx.Shape do
         "tensor must have rank 2, got rank #{tuple_size(shape)} with shape #{inspect(shape)}"
       )
 
+  def eigh({n, n}) do
+    {{n}, {n, n}}
+  end
+
+  def eigh(shape),
+    do:
+      raise(
+        ArgumentError,
+        "tensor must be a square matrix (a tensor with two equal axes), got shape: #{inspect(shape)}"
+      )
+
   def svd({m, n}) do
     {{m, m}, {min(m, n)}, {n, n}}
   end
@@ -1599,8 +1695,8 @@ defmodule Nx.Shape do
         "tensor must have as many rows as columns, got shape: #{inspect(shape)}"
       )
 
-  def solve({n, n}, {n}), do: :ok
-  def solve({n, n}, {n, _m}), do: :ok
+  def solve({n, n}, {n}), do: {n}
+  def solve({n, n}, {n, m}), do: {n, m}
 
   def solve({n, n}, b_shape) do
     raise(

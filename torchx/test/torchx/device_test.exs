@@ -21,6 +21,15 @@ defmodule Torchx.DeviceTest do
     end
   end
 
+  describe "deletion" do
+    test "delete multiple times" do
+      t = Nx.tensor([1, 2, 3], backend: {TB, device: @device})
+      assert Nx.backend_deallocate(t) == :ok
+      assert Nx.backend_deallocate(t) == :already_deallocated
+      assert Nx.backend_deallocate(t) == :already_deallocated
+    end
+  end
+
   describe "backend_transfer" do
     test "to" do
       t = Nx.tensor([1, 2, 3], backend: Nx.BinaryBackend)
@@ -32,7 +41,7 @@ defmodule Torchx.DeviceTest do
       t = Nx.tensor([1, 2, 3], backend: {TB, device: @device})
       assert Nx.backend_transfer(t) == Nx.tensor([1, 2, 3], backend: Nx.BinaryBackend)
 
-      # TODO: we need to raise once the data has been transfered once
+      # TODO: we need to raise once the data has been transferred once
       # assert_raise ArgumentError, fn -> Nx.backend_transfer(t) end
     end
   end

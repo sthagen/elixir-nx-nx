@@ -4,22 +4,34 @@ defmodule Torchx.MixProject do
   @source_url "https://github.com/elixir-nx/nx"
   @version "0.1.0-dev"
 
-  @libtorch_version "1.9.1"
-  @libtorch_target "cpu"
-  @libtorch_cache Path.join(__DIR__, "cache/libtorch-#{@libtorch_version}-#{@libtorch_target}")
+  @valid_targets ["cpu", "cu102", "cu111"]
+
+  @libtorch_version System.get_env("LIBTORCH_VERSION", "1.10.2")
+  @libtorch_target System.get_env("LIBTORCH_TARGET", "cpu")
+
+  @libtorch_base "libtorch"
+  @libtorch_dir System.get_env(
+                  "LIBTORCH_DIR",
+                  Path.join(__DIR__, "cache/libtorch-#{@libtorch_version}-#{@libtorch_target}")
+                )
+  @libtorch_compilers [:torchx, :elixir_make]
 
   def project do
     [
       app: :torchx,
       name: "Torchx",
       version: @version,
-      elixir: "~> 1.12-dev",
+      elixir: "~> 1.13",
       deps: deps(),
       docs: docs(),
-      compilers: compilers() ++ Mix.compilers(),
+      compilers: @libtorch_compilers ++ Mix.compilers(),
       elixirc_paths: elixirc_paths(Mix.env()),
       aliases: aliases(),
-      make_env: %{"LIBTORCH_DIR" => System.get_env("LIBTORCH_DIR", @libtorch_cache)}
+      make_env: %{
+        "LIBTORCH_DIR" => @libtorch_dir,
+        "LIBTORCH_BASE" => @libtorch_base,
+        "MIX_BUILD_EMBEDDED" => "#{Mix.Project.config()[:build_embedded]}"
+      }
     ]
   end
 
@@ -37,8 +49,9 @@ defmodule Torchx.MixProject do
   defp deps do
     [
       {:nx, path: "../nx"},
+      {:dll_loader_helper, "~> 0.1.0"},
       {:elixir_make, "~> 0.6"},
-      {:ex_doc, "~> 0.23", only: :dev}
+      {:ex_doc, "~> 0.28.3", only: :dev}
     ]
   end
 
@@ -50,18 +63,14 @@ defmodule Torchx.MixProject do
     ]
   end
 
-  defp compilers do
-    if System.get_env("LIBTORCH_DIR"), do: [:elixir_make], else: [:torchx, :elixir_make]
-  end
-
   defp aliases do
     [
-      "compile.torchx": &compile/1
+      "compile.torchx": &download_and_unzip/1
     ]
   end
 
-  defp compile(args) do
-    libtorch_cache = @libtorch_cache
+  defp download_and_unzip(args) do
+    libtorch_cache = @libtorch_dir
     cache_dir = Path.dirname(libtorch_cache)
 
     if "--force" in args do
@@ -71,11 +80,11 @@ defmodule Torchx.MixProject do
     if File.dir?(libtorch_cache) do
       {:ok, []}
     else
-      install_libtorch(cache_dir, libtorch_cache)
+      download_and_unzip(cache_dir, libtorch_cache)
     end
   end
 
-  defp install_libtorch(cache_dir, libtorch_cache) do
+  defp download_and_unzip(cache_dir, libtorch_cache) do
     File.mkdir_p!(cache_dir)
     libtorch_zip = libtorch_cache <> ".zip"
 
@@ -83,21 +92,39 @@ defmodule Torchx.MixProject do
       # Download libtorch
 
       # This is so we don't forget to update the URLs below when we want to update libtorch
-      unless @libtorch_version == "1.9.1" and @libtorch_target == "cpu" do
-        raise "ensure the download URLs match the default libtorch version"
+      if @libtorch_target != "cpu" and {:unix, :darwin} == :os.type() do
+        Mix.raise("No CUDA support on OSX")
+      end
+
+      # Check if target is valid
+      unless Enum.member?(@valid_targets, @libtorch_target) do
+        Mix.raise("Invalid target, please use one of #{inspect(@valid_targets)}")
       end
 
       url =
         case :os.type() do
           {:unix, :linux} ->
-            "https://download.pytorch.org/libtorch/cpu/libtorch-cxx11-abi-shared-with-deps-1.9.1%2Bcpu.zip"
+            "https://download.pytorch.org/libtorch/#{@libtorch_target}/libtorch-cxx11-abi-shared-with-deps-#{@libtorch_version}%2B#{@libtorch_target}.zip"
 
           {:unix, :darwin} ->
             # MacOS
-            "https://download.pytorch.org/libtorch/cpu/libtorch-macos-1.9.1.zip"
+            # pytorch only provides official pre-built binaries for x86_64
+            case List.to_string(:erlang.system_info(:system_architecture)) do
+              "x86_64" <> _ ->
+                "https://download.pytorch.org/libtorch/#{@libtorch_target}/libtorch-macos-#{@libtorch_version}.zip"
+
+              _ ->
+                Mix.raise(
+                  "Please download pre-built/compile LibTorch and set environment variable LIBTORCH_DIR"
+                )
+            end
+
+          {:win32, :nt} ->
+            # Windows
+            "https://download.pytorch.org/libtorch/#{@libtorch_target}/libtorch-win-shared-with-deps-#{@libtorch_version}%2B#{@libtorch_target}.zip"
 
           os ->
-            raise "OS #{os} is not supported"
+            Mix.raise("OS #{inspect(os)} is not supported")
         end
 
       download!(url, libtorch_zip)
