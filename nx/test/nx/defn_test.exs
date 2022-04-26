@@ -343,6 +343,12 @@ defmodule Nx.DefnTest do
       assert %T{shape: {3}, data: %Expr{op: :random_normal, args: [%T{shape: {}}, %T{shape: {}}]}} =
                random_normal(Nx.tensor([1, 2, 3]))
     end
+
+    test "raise an error given a shape tuple with tensor values" do
+      assert_raise ArgumentError,
+                   ~r"invalid dimension in axis 0 found in shape.*if you are trying to pass a dimension or a shape as an argument to a defn function"s,
+                   fn -> iota({10}) end
+    end
   end
 
   describe "tensor ops" do
@@ -925,6 +931,8 @@ defmodule Nx.DefnTest do
     def not_defn(a, b), do: Nx.add(a, b)
     defn add_two_not_defn(a, b), do: Nx.DefnTest.not_defn(a, b)
 
+    defn add_two_io(a, b), do: IO.inspect({a, b})
+
     test "undefined remote" do
       assert_raise UndefinedFunctionError,
                    "function Nx.DefnTest.unknown/2 is undefined or private",
@@ -935,6 +943,14 @@ defmodule Nx.DefnTest do
       assert_raise RuntimeError,
                    "cannot invoke Nx.DefnTest.not_defn/2 inside defn because it was not defined with defn",
                    fn -> add_two_not_defn(1, 2) end
+    end
+
+    test "IO remote" do
+      assert_raise RuntimeError,
+                   "cannot invoke IO.inspect/1 inside defn because it was not defined with defn. " <>
+                     "To print the runtime value of a tensor, use inspect_value/2. " <>
+                     "To print the tensor expression, use inspect_expr/2",
+                   fn -> add_two_io(1, 2) end
     end
   end
 
@@ -1319,18 +1335,34 @@ defmodule Nx.DefnTest do
   end
 
   describe "compilation errors" do
-    test "invalid numerical expression" do
-      assert_raise CompileError, ~r"#{location(+5)}: invalid numerical expression", fn ->
-        defmodule Sample do
-          import Nx.Defn
+    test "undefined local function" do
+      assert_raise CompileError,
+                   ~r"#{location(+6)}: undefined function do_add/2 \(there is no such import\)",
+                   fn ->
+                     defmodule Sample do
+                       import Nx.Defn
 
-          defn add(_a, _b) do
-            receive do
-              :ok -> :ok
-            end
-          end
-        end
-      end
+                       defn add(a, b) do
+                         do_add(a, b)
+                       end
+                     end
+                   end
+    end
+
+    test "non-defn local function" do
+      assert_raise CompileError,
+                   ~r"#{location(+6)}: cannot use function do_add/2 inside defn because it was not defined with defn",
+                   fn ->
+                     defmodule Sample do
+                       import Nx.Defn
+
+                       defn add(a, b) do
+                         do_add(a, b)
+                       end
+
+                       defp do_add(a, b), do: a + b
+                     end
+                   end
     end
 
     test "non-variables used as arguments" do
