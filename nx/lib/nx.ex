@@ -1861,6 +1861,9 @@ defmodule Nx do
   Machines with different floating-point representations
   will give different results.
 
+  For complex numbers, the last axis will change in size
+  depending on whether you are upcasting or downcasting.
+
   ## Examples
 
       iex> t = Nx.bitcast(Nx.tensor([0, 0, 0], names: [:data], type: {:s, 32}), {:f, 32})
@@ -1878,11 +1881,20 @@ defmodule Nx do
 
       iex> Nx.bitcast(Nx.tensor([0, 1, 2], names: [:data], type: {:s, 16}), {:f, 32})
       ** (ArgumentError) input type width must match new type width, got input type {:s, 16} and output type {:f, 32}
+
+      iex> Nx.bitcast(Nx.tensor([0], type: {:c, 64}), {:s, 64})
+      ** (ArgumentError) Nx.bitcast/2 does not support complex inputs
+
+      iex> Nx.bitcast(Nx.tensor([0], type: {:s, 64}), {:c, 64})
+      ** (ArgumentError) Nx.bitcast/2 does not support complex inputs
   """
   @doc type: :type
   def bitcast(tensor, type) do
     %T{type: {_, bits} = input_type} = tensor = to_tensor(tensor)
     {_, new_bits} = new_type = Nx.Type.normalize!(type)
+
+    Nx.Shared.raise_complex_not_supported(input_type, :bitcast, 2)
+    Nx.Shared.raise_complex_not_supported(new_type, :bitcast, 2)
 
     unless new_bits == bits do
       raise ArgumentError,
@@ -3142,6 +3154,12 @@ defmodule Nx do
     {shape, names} = Nx.Shape.binary_broadcast(left_shape, left_names, right_shape, right_names)
 
     apply(impl!(left, right), op, [%{left | type: type, shape: shape, names: names}, left, right])
+  end
+
+  defp non_complex_element_wise_pred_op(left, right, op) do
+    Nx.Shared.raise_complex_not_supported(type(left), op, 2)
+    Nx.Shared.raise_complex_not_supported(type(right), op, 2)
+    element_wise_pred_op(left, right, op)
   end
 
   defp element_wise_pred_op(left, right, op) do
@@ -4535,7 +4553,7 @@ defmodule Nx do
       >
   """
   @doc type: :element
-  def greater(left, right), do: element_wise_pred_op(left, right, :greater)
+  def greater(left, right), do: non_complex_element_wise_pred_op(left, right, :greater)
 
   @doc """
   Element-wise less than comparison of two tensors.
@@ -4585,7 +4603,7 @@ defmodule Nx do
 
   """
   @doc type: :element
-  def less(left, right), do: element_wise_pred_op(left, right, :less)
+  def less(left, right), do: non_complex_element_wise_pred_op(left, right, :less)
 
   @doc """
   Element-wise greater than or equal comparison of two tensors.
@@ -4639,7 +4657,8 @@ defmodule Nx do
 
   """
   @doc type: :element
-  def greater_equal(left, right), do: element_wise_pred_op(left, right, :greater_equal)
+  def greater_equal(left, right),
+    do: non_complex_element_wise_pred_op(left, right, :greater_equal)
 
   @doc """
   Element-wise less than or equal comparison of two tensors.
@@ -4693,7 +4712,7 @@ defmodule Nx do
 
   """
   @doc type: :element
-  def less_equal(left, right), do: element_wise_pred_op(left, right, :less_equal)
+  def less_equal(left, right), do: non_complex_element_wise_pred_op(left, right, :less_equal)
 
   @doc """
   Constructs a tensor from two tensors, based on a predicate.
@@ -8046,8 +8065,7 @@ defmodule Nx do
   ## Conv
 
   @doc """
-  Computes an n-D convolution as used in neural
-  networks.
+  Computes an n-D convolution (n>=3) as used in neural networks.
 
   This function can be thought of as sliding an n-D
   kernel across the input, producing a new tensor that
@@ -8065,7 +8083,7 @@ defmodule Nx do
 
   Where `input_d0...input_dn` and `kernel_d0...kernel_dn` represent
   an arbitrary number of spatial dimensions. You can alter this configuration
-  using one of the `_permutation` configuration options. Permutations
+  using one of the `*_permutation` configuration options. Permutations
   are input, kernel, and output specifications for the layout of the
   convolution. For example, if your input tensor is configured with
   "channels last", you can specify the input permutation with:
@@ -8227,6 +8245,7 @@ defmodule Nx do
 
     %{shape: input_shape, names: input_names} = tensor = to_tensor(tensor)
     %{shape: kernel_shape, names: kernel_names} = kernel = to_tensor(kernel)
+    Nx.Shape.validate_conv!(input_shape, kernel_shape)
 
     input_permutation = opts[:input_permutation] || axes(input_shape)
     input_permutation = Nx.Shape.normalize_axes(input_shape, input_permutation, input_names)
@@ -8374,6 +8393,9 @@ defmodule Nx do
     end
 
     output_type = Nx.Type.merge(type, Nx.Type.merge(min_type, max_type))
+
+    Nx.Shared.raise_complex_not_supported(output_type, :clip, 2)
+
     impl!(tensor).clip(%{tensor | type: output_type}, tensor, min, max)
   end
 
@@ -9551,8 +9573,10 @@ defmodule Nx do
                 "unknown value for :direction, expected :asc or :desc, got: #{inspect(other)}"
       end
 
-    %T{shape: shape, names: names} = tensor = to_tensor(tensor)
+    %T{type: type, shape: shape, names: names} = tensor = to_tensor(tensor)
     axis = Nx.Shape.normalize_axis(shape, opts[:axis], names)
+
+    Nx.Shared.raise_complex_not_supported(type, :argsort, 2)
 
     impl!(tensor).argsort(
       %{tensor | type: {:s, 64}},
