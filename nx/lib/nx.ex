@@ -12,23 +12,10 @@ defmodule Nx do
       iex> Nx.shape(t)
       {2, 2}
 
-  To implement [the Softmax function](https://en.wikipedia.org/wiki/Softmax_function)
-  using this library:
-
-      iex> t = Nx.tensor([[1, 2], [3, 4]])
-      iex> Nx.divide(Nx.exp(t), Nx.sum(Nx.exp(t)))
-      #Nx.Tensor<
-        f32[2][2]
-        [
-          [0.032058604061603546, 0.08714432269334793],
-          [0.23688282072544098, 0.6439142227172852]
-        ]
-      >
-
-  The `Nx` library also provides the `Nx.Defn` functionality,
-  which provides a subset of Elixir tailored for numerical
-  computations. For example, it overrides Elixir's default
-  operators so they are tensor-aware:
+  `Nx` also provides the so-called numerical definitions under
+  the `Nx.Defn` module. They are a subset of Elixir tailored for
+  numerical computations. For example, it overrides Elixir's
+  default operators so they are tensor-aware:
 
       defn softmax(t) do
         Nx.exp(t) / Nx.sum(Nx.exp(t))
@@ -36,13 +23,89 @@ defmodule Nx do
 
   Code inside `defn` functions can also be given to custom compilers,
   which can compile said functions just-in-time (JIT) to run on the
-  CPU or on the GPU. See `Nx.Defn` for more information.
+  CPU or on the GPU.
+
+  ## References
+
+  Here is a general outline of the main references in this library:
+
+    * For an introduction, see our [Intro to Nx](intro-to-nx.livemd) guide
+
+    * This module provides the main API for working with tensors
+
+    * `Nx.Defn` provides numerical definitions, CPU/GPU compilation, gradients, and more
+
+    * `Nx.LinAlg` provides functions related to linear algebra
+
+    * `Nx.Constants` declares many constants commonly used in numerical code
+
+  Continue reading this documentation for an overview of creating,
+  broadcasting, and accessing/slicing Nx tensors.
 
   ## Creating tensors
 
   The main APIs for creating tensors are `tensor/2`, `from_binary/2`,
   `iota/2`, `eye/2`, `random_uniform/2`, `random_normal/2`, and
   `broadcast/3`.
+
+  The tensor types can be one of:
+
+    * unsigned integers (`u8`, `u16`, `u32`, `u64`)
+    * signed integers (`s8`, `s16`, `s32`, `s64`)
+    * floats (`f16`, `f32`, `f64`)
+    * brain floats (`bf16`)
+    * and complex numbers (`c64`, `c128`)
+
+  The types are tracked as tuples:
+
+      iex> Nx.tensor([1, 2, 3], type: {:f, 32})
+      #Nx.Tensor<
+        f32[3]
+        [1.0, 2.0, 3.0]
+      >
+
+  But a shortcut atom notation is also available:
+
+      iex> Nx.tensor([1, 2, 3], type: :f32)
+      #Nx.Tensor<
+        f32[3]
+        [1.0, 2.0, 3.0]
+      >
+
+  The tensor dimensions can also be named, via the `:names` option
+  available to all creation functions:
+
+      iex> Nx.iota({2, 3}, names: [:x, :y])
+      #Nx.Tensor<
+        s64[x: 2][y: 3]
+        [
+          [0, 1, 2],
+          [3, 4, 5]
+        ]
+      >
+
+  Finally, for creating vectors and matrices, a sigil notation
+  is available:
+
+      iex> import Nx, only: :sigils
+      iex> ~V[1 2 3]f32
+      #Nx.Tensor<
+        f32[3]
+        [1.0, 2.0, 3.0]
+      >
+
+      iex> import Nx, only: :sigils
+      iex> ~M'''
+      ...> 1 2 3
+      ...> 4 5 6
+      ...> '''s32
+      #Nx.Tensor<
+        s32[2][3]
+        [
+          [1, 2, 3],
+          [4, 5, 6]
+        ]
+      >
 
   All other APIs accept exclusively numbers or tensors, unless
   explicitly noted otherwise.
@@ -1407,11 +1470,15 @@ defmodule Nx do
         [1, 2, 3, 4]
       >
 
-      iex> Nx.from_binary(<<12.3::float-64-native>>, {:f, 64})
+  The atom notation for types is also supported:
+
+      iex> Nx.from_binary(<<12.3::float-64-native>>, :f64)
       #Nx.Tensor<
         f64[1]
         [12.3]
       >
+
+  An error is raised for incompatible sizes:
 
       iex> Nx.from_binary(<<1, 2, 3, 4>>, {:f, 64})
       ** (ArgumentError) binary does not match the given size
@@ -1425,7 +1492,7 @@ defmodule Nx do
   @doc type: :creation
   def from_binary(binary, type, opts \\ []) when is_binary(binary) do
     opts = keyword!(opts, [:backend])
-    {_, size} = Nx.Type.normalize!(type)
+    {_, size} = type = Nx.Type.normalize!(type)
     dim = div(bit_size(binary), size)
 
     if binary == "" do
@@ -7048,6 +7115,185 @@ defmodule Nx do
     do: aggregate_window_op(tensor, window_dimensions, opts, :window_product)
 
   @doc """
+  Returns the cumulative sum of elements along an axis.
+
+  ## Options
+
+    * `:axis` - the axis to sum elements along. Defaults to `0`
+
+  ## Examples
+
+      iex> Nx.cumulative_sum(Nx.tensor([1, 2, 3, 4]))
+      #Nx.Tensor<
+        s64[4]
+        [1, 3, 6, 10]
+      >
+
+      iex> Nx.cumulative_sum(Nx.iota({3, 3}), axis: 0)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [0, 1, 2],
+          [3, 5, 7],
+          [9, 12, 15]
+        ]
+      >
+
+      iex> Nx.cumulative_sum(Nx.iota({3, 3}), axis: 1)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [0, 1, 3],
+          [3, 7, 12],
+          [6, 13, 21]
+        ]
+      >
+  """
+  @doc type: :cumulative
+  def cumulative_sum(tensor, opts \\ []),
+    do: cumulative_op(tensor, opts, :cumulative_sum, :window_sum)
+
+  @doc """
+  Returns the cumulative product of elements along an axis.
+
+  ## Options
+
+    * `:axis` - the axis to multiply elements along. Defaults to `0`
+
+  ## Examples
+
+      iex> Nx.cumulative_product(Nx.tensor([1, 2, 3, 4]))
+      #Nx.Tensor<
+        s64[4]
+        [1, 2, 6, 24]
+      >
+
+      iex> Nx.cumulative_product(Nx.iota({3, 3}), axis: 0)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [0, 1, 2],
+          [0, 4, 10],
+          [0, 28, 80]
+        ]
+      >
+
+      iex> Nx.cumulative_product(Nx.iota({3, 3}), axis: 1)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [0, 0, 0],
+          [3, 12, 60],
+          [6, 42, 336]
+        ]
+      >
+  """
+  @doc type: :cumulative
+  def cumulative_product(tensor, opts \\ []),
+    do: cumulative_op(tensor, opts, :cumulative_product, :window_product)
+
+  @doc """
+  Returns the cumulative minimum of elements along an axis.
+
+  ## Options
+
+    * `:axis` - the axis to compare elements along. Defaults to `0`
+
+  ## Examples
+
+      iex> Nx.cumulative_min(Nx.tensor([3, 4, 2, 1]))
+      #Nx.Tensor<
+        s64[4]
+        [3, 3, 2, 1]
+      >
+
+      iex> Nx.cumulative_min(Nx.tensor([[2, 3, 1], [1, 3, 2], [2, 1, 3]]), axis: 0)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [2, 3, 1],
+          [1, 3, 1],
+          [1, 1, 1]
+        ]
+      >
+
+      iex> Nx.cumulative_min(Nx.tensor([[2, 3, 1], [1, 3, 2], [2, 1, 3]]), axis: 1)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [2, 2, 1],
+          [1, 1, 1],
+          [2, 1, 1]
+        ]
+      >
+  """
+  @doc type: :cumulative
+  def cumulative_min(tensor, opts \\ []),
+    do: cumulative_op(tensor, opts, :cumulative_min, :window_min)
+
+  @doc """
+  Returns the cumulative maximum of elements along an axis.
+
+  ## Options
+
+    * `:axis` - the axis to compare elements along. Defaults to `0`
+
+  ## Examples
+
+      iex> Nx.cumulative_max(Nx.tensor([3, 4, 2, 1]))
+      #Nx.Tensor<
+        s64[4]
+        [3, 4, 4, 4]
+      >
+
+      iex> Nx.cumulative_max(Nx.tensor([[2, 3, 1], [1, 3, 2], [2, 1, 3]]), axis: 0)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [2, 3, 1],
+          [2, 3, 2],
+          [2, 3, 3]
+        ]
+      >
+
+      iex> Nx.cumulative_max(Nx.tensor([[2, 3, 1], [1, 3, 2], [2, 1, 3]]), axis: 1)
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [2, 3, 3],
+          [1, 3, 3],
+          [2, 2, 3]
+        ]
+      >
+  """
+  @doc type: :cumulative
+  def cumulative_max(tensor, opts \\ []),
+    do: cumulative_op(tensor, opts, :cumulative_max, :window_max)
+
+  defp cumulative_op(tensor, opts, op, window_op) do
+    opts = keyword!(opts, axis: 0)
+    tensor = to_tensor(tensor)
+    axis = Nx.Shape.normalize_axis(tensor.shape, opts[:axis], tensor.names)
+
+    Nx.Shared.optional(op, [tensor, axis], tensor, fn tensor, axis ->
+      shape = shape(tensor)
+      axis_size = elem(shape, axis)
+      rank = rank(shape)
+
+      padding =
+        List.duplicate({0, 0}, rank)
+        |> List.replace_at(axis, {axis_size - 1, 0})
+
+      window_shape =
+        List.duplicate(1, rank)
+        |> List.to_tuple()
+        |> put_elem(axis, axis_size)
+
+      aggregate_window_op(tensor, window_shape, [padding: padding], window_op)
+    end)
+  end
+
+  @doc """
   Reduces over a tensor with the given accumulator.
 
   The given `fun` will receive two tensors and it must
@@ -8065,7 +8311,7 @@ defmodule Nx do
   ## Conv
 
   @doc """
-  Computes an n-D convolution (n>=3) as used in neural networks.
+  Computes an n-D convolution (where `n >= 3`) as used in neural networks.
 
   This function can be thought of as sliding an n-D
   kernel across the input, producing a new tensor that
@@ -10051,7 +10297,7 @@ defmodule Nx do
   Otherwise, it is s64. You can specify the tensor type
   as a sigil modifier:
 
-      iex> import Nx
+      iex> import Nx, only: :sigils
       iex> ~M[0.1 0.2 0.3 0.4]f16
       #Nx.Tensor<
         f16[1][4]
@@ -10096,7 +10342,7 @@ defmodule Nx do
   Otherwise, it is s64. You can specify the tensor type
   as a sigil modifier:
 
-      iex> import Nx
+      iex> import Nx, only: :sigils
       iex> ~V[0.1 0.2 0.3 0.4]f16
       #Nx.Tensor<
         f16[4]

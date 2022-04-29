@@ -22,6 +22,10 @@ defmodule Torchx.Backend do
        and nan becomes zero. `Torchx` behaviour is type dependent with no clear
        rule across types.
 
+  ## Options
+
+    * `:device` - Defaults to `:cpu`. An atom representing the device for the allocation of a given tensor.
+    Valid values can be seen at the main [`Torchx`](Torchx.html#module-devices) docs.
   """
 
   @behaviour Nx.Backend
@@ -203,9 +207,8 @@ defmodule Torchx.Backend do
   @impl true
   def backend_transfer(tensor, backend, opts) do
     backend_copy(tensor, backend, opts)
-    # TODO: implement deallocation after transfer
-    # after
-    #  backend_deallocate(tensor)
+  after
+    backend_deallocate(tensor)
   end
 
   @impl true
@@ -699,6 +702,42 @@ defmodule Torchx.Backend do
       |> Torchx.subtract(result)
       |> to_nx(out)
     end
+  end
+
+  @impl true
+  def cumulative_sum(%T{type: out_type} = out, %T{} = t, axis) do
+    check_type!(out_type)
+
+    t
+    |> from_nx()
+    |> Torchx.cumulative_sum(axis)
+    |> to_nx(out)
+  end
+
+  @impl true
+  def cumulative_product(%T{type: out_type} = out, %T{} = t, axis) do
+    check_type!(out_type)
+
+    t
+    |> from_nx()
+    |> Torchx.cumulative_product(axis)
+    |> to_nx(out)
+  end
+
+  @impl true
+  def cumulative_min(%T{} = out, %T{} = t, axis) do
+    t
+    |> from_nx()
+    |> Torchx.cumulative_min(axis)
+    |> to_nx(out)
+  end
+
+  @impl true
+  def cumulative_max(%T{} = out, %T{} = t, axis) do
+    t
+    |> from_nx()
+    |> Torchx.cumulative_max(axis)
+    |> to_nx(out)
   end
 
   ## Ops

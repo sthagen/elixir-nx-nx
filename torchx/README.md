@@ -1,9 +1,8 @@
 <h1><img src="https://github.com/elixir-nx/nx/raw/main/torchx/torchx.png" alt="Torchx" width="400"></h1>
 
-Elixir client for LibTorch (from PyTorch). It includes a backend for `Nx` for native
-execution of tensor operations (inside and outside of `defn`).
-
-This project is currently alpha and it supports most of the Nx API, aside from a few functions and function options.
+Elixir client for PyTorch (through the LibTorch C++ frontend).
+It includes a backend for `Nx` for native execution of tensor
+operations (inside and outside of `defn`).
 
 ## Installation
 
@@ -20,8 +19,7 @@ use a Git dependency while we work on our first release:
 ```elixir
 def deps do
   [
-    {:torchx, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "torchx"},
-    {:nx, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "nx", override: true}
+    {:torchx, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "torchx"}
   ]
 end
 ```
@@ -30,8 +28,7 @@ If you are using Livebook or IEx, you can instead run:
 
 ```elixir
 Mix.install([
-  {:exla, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "exla"},
-  {:nx, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "nx", override: true}
+  {:torchx, "~> 0.1.0-dev", github: "elixir-nx/nx", sparse: "torchx"}
 ])
 ```
 
