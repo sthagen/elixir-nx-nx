@@ -17,12 +17,8 @@ defmodule EXLA.Defn.LockedCache do
   @doc """
   Reads the cache key.
   """
-  def fetch(key) do
-    try do
-      {:ok, :ets.lookup_element(@name, key, 2)}
-    catch
-      :error, :badarg -> :error
-    end
+  def get(key) do
+    soft_read(key)
   end
 
   @doc """
@@ -31,7 +27,7 @@ defmodule EXLA.Defn.LockedCache do
   """
   def run(key, fun) do
     try do
-      {nil, :ets.lookup_element(@name, key, 2)}
+      {nil, hard_read(key)}
     catch
       :error, :badarg ->
         case GenServer.call(@name, {:lock, key}, @timeout) do
@@ -44,14 +40,26 @@ defmodule EXLA.Defn.LockedCache do
                 :erlang.raise(kind, reason, __STACKTRACE__)
             else
               {return, result} ->
-                :ets.insert(@name, {key, result})
+                write(key, result)
                 GenServer.cast(@name, {:cached, ref})
                 {return, result}
             end
 
           :cached ->
-            {nil, :ets.lookup_element(@name, key, 2)}
+            {nil, hard_read(key)}
         end
+    end
+  end
+
+  defp init(), do: :ets.new(@name, [:public, :set, :named_table, read_concurrency: true])
+  defp write(key, value), do: :ets.insert(@name, {key, value})
+  defp hard_read(key), do: :ets.lookup_element(@name, key, 2)
+
+  defp soft_read(key) do
+    try do
+      :ets.lookup_element(@name, key, 2)
+    catch
+      :error, :badarg -> nil
     end
   end
 
@@ -64,7 +72,7 @@ defmodule EXLA.Defn.LockedCache do
 
   @impl true
   def init(:ok) do
-    :ets.new(@name, [:public, :set, :named_table, read_concurrency: true])
+    init()
     {:ok, %{keys: %{}, ref_to_key: %{}}}
   end
 
