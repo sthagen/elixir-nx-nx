@@ -133,8 +133,24 @@ defmodule Nx.Defn.Expr do
         clauses -> unzip_clauses(clauses)
       end
 
-    clauses = Enum.zip(preds, exprs)
-    flatten_to_composite(out, context, exprs, &expr(&1, context, :cond, [clauses, last]))
+    Enum.zip(preds, exprs)
+    |> Enum.reject(fn {pred, _expr} ->
+      # Eliminate all clauses that will never
+      match?(%T{data: %Expr{op: :constant, args: [number]}} when number == 0, pred)
+    end)
+    |> case do
+      # No clauses left, simply return last
+      [] ->
+        last
+
+      # We found a clause that always matches, return it instead
+      [{%T{data: %Expr{op: :constant, args: [number]}}, expr} | _] when number > 0 ->
+        expr
+
+      # Otherwise, keep it as a cond
+      clauses ->
+        flatten_to_composite(out, context, exprs, &expr(&1, context, :cond, [clauses, last]))
+    end
   end
 
   defp broadcast_clause([type = last | exprs]) do
@@ -584,6 +600,13 @@ defmodule Nx.Defn.Expr do
     tensor = to_expr(tensor)
 
     if c = maybe_constant(tensor) do
+      c =
+        if is_float(c) and Nx.Type.integer?(out.type) do
+          trunc(c)
+        else
+          c
+        end
+
       constant(out, c)
     else
       expr(out, tensor.data.context, :as_type, [tensor])
@@ -843,11 +866,22 @@ defmodule Nx.Defn.Expr do
   defp to_expr(%T{data: %Expr{}} = t),
     do: t
 
-  defp to_expr(%T{data: %Nx.BinaryBackend{}, shape: {}} = t),
-    do: constant(t, Nx.to_number(t))
+  defp to_expr(%T{data: %Nx.BinaryBackend{}, shape: shape} = t) do
+    case shape do
+      {} -> constant(t, Nx.to_number(t))
+      _ -> expr(t, nil, :tensor, [t])
+    end
+  end
 
-  defp to_expr(%T{} = t),
-    do: expr(t, nil, :tensor, [t])
+  defp to_expr(%T{data: %backend{}} = t) do
+    raise ArgumentError,
+          "cannot convert tensor allocated on #{inspect(backend)} to an expression. " <>
+            "This may mean you are passing a tensor to defn/jit as an optional argument " <>
+            "or as closure in an anonymous function. For efficiency, it is preferred " <>
+            "to always pass tensors as required arguments instead. Alternatively, you " <>
+            "could call Nx.backend_copy/1 on the tensor, however this will copy its " <>
+            "value and inline it inside the defn expression. Got: #{inspect(t)}"
+  end
 
   defp to_expr(number) when is_number(number),
     do: constant(%T{shape: {}, names: [], type: Nx.Type.infer(number)}, number)
@@ -984,9 +1018,17 @@ defmodule Nx.Defn.Expr do
 
   defp constant(%{type: type, shape: shape} = out, number) do
     number =
-      if is_integer(number) and Nx.Type.float?(type),
-        do: Complex.multiply(1.0, number),
-        else: number
+      cond do
+        is_integer(number) and Nx.Type.float?(type) ->
+          Complex.multiply(1.0, number)
+
+        not is_integer(number) and Nx.Type.integer?(type) ->
+          raise ArgumentError,
+                "value #{inspect(number)} is not valid for constant of type #{inspect(type)}"
+
+        number ->
+          number
+      end
 
     id = {number, type, shape}
     %{out | data: %Expr{id: id, op: :constant, args: [number], context: nil}}
