@@ -2,6 +2,7 @@ defmodule EXLA.Defn.APITest do
   use EXLA.Case, async: true
 
   import Nx.Defn
+  import ExUnit.CaptureLog
 
   setup do
     Nx.Defn.default_options(compiler: EXLA)
@@ -15,6 +16,28 @@ defmodule EXLA.Defn.APITest do
       assert_raise RuntimeError, ~r"Invalid device ordinal value \(1024\)", fn ->
         EXLA.jit(&add_two/2, [2, 3], device_id: 1024)
       end
+    end
+
+    test "logs when debugging" do
+      logs =
+        capture_log(fn ->
+          EXLA.jit(&add_two/2, [2, 3], debug: true)
+        end)
+
+      assert logs =~ ~r"EXLA defn evaluation( cache hit)? in \d+\.\dms"
+      assert logs =~ ~r"EXLA compilation( cache hit)? in \d+\.\dms"
+      assert logs =~ ~r"EXLA device \d lock in \d+\.\dms"
+      assert logs =~ ~r"EXLA execution on device \d in \d+\.\dms"
+
+      logs =
+        capture_log(fn ->
+          EXLA.jit(&add_two/2, [2, 3], debug: true)
+        end)
+
+      assert logs =~ ~r"EXLA defn evaluation cache hit in \d+\.\dms"
+      assert logs =~ ~r"EXLA compilation cache hit in \d+\.\dms"
+      assert logs =~ ~r"EXLA device \d lock in \d+\.\d+ms"
+      assert logs =~ ~r"EXLA execution on device \d in \d+\.\dms"
     end
   end
 
