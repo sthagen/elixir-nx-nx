@@ -7,10 +7,9 @@ defmodule EXLA.Backend do
   allows the following options:
 
     * `:client` - the client to store the data on.
-      Defaults to the client configured in `Nx.Defn`,
-      otherwise uses `:host`.
+      Defaults to EXLA's default client.
 
-    * `:device_id` - which device to store it on
+    * `:device_id` - which device to store it on.
 
   To get the data out of the device backend into a regular
   tensor, call `Nx.backend_transfer/1` (with the device
@@ -67,7 +66,7 @@ defmodule EXLA.Backend do
   end
 
   @impl true
-  def to_batched_list(out, tensor, opts) do
+  def to_batched(out, tensor, opts) do
     leftover = opts[:leftover]
 
     batch_size = elem(out.shape, 0)
@@ -76,29 +75,32 @@ defmodule EXLA.Backend do
     remainder = rem(axis_size, batch_size)
     num_full_batches = div(axis_size, batch_size)
 
-    expr_fun = fn tensor, start_idx ->
-      Nx.slice_along_axis(tensor, start_idx, batch_size)
-    end
+    range =
+      if remainder != 0 and leftover == :repeat do
+        0..num_full_batches
+      else
+        0..(num_full_batches - 1)
+      end
 
-    full_batches =
-      for i <- 0..(num_full_batches - 1) do
+    Stream.map(range, fn
+      ^num_full_batches ->
+        expr_fun = fn tensor ->
+          Nx.concatenate([
+            Nx.slice_along_axis(tensor, num_full_batches * batch_size, remainder),
+            Nx.slice_along_axis(tensor, 0, batch_size - remainder)
+          ])
+        end
+
+        jit(expr_fun, [tensor])
+
+      i ->
+        expr_fun = fn tensor, start_idx ->
+          Nx.slice_along_axis(tensor, start_idx, batch_size)
+        end
+
         start_idx = i * batch_size
         jit(expr_fun, [tensor, start_idx])
-      end
-
-    if remainder != 0 and leftover == :repeat do
-      expr_fun = fn tensor ->
-        Nx.concatenate([
-          Nx.slice_along_axis(tensor, num_full_batches * batch_size, remainder),
-          Nx.slice_along_axis(tensor, 0, batch_size - remainder)
-        ])
-      end
-
-      last_batch = jit(expr_fun, [tensor])
-      full_batches ++ [last_batch]
-    else
-      full_batches
-    end
+    end)
   end
 
   @impl true
@@ -131,18 +133,8 @@ defmodule EXLA.Backend do
 
   ## Helpers
 
-  defp default_client_name do
-    opts = Nx.Defn.default_options()
-
-    if opts[:compiler] == EXLA do
-      opts[:client] || :host
-    else
-      :host
-    end
-  end
-
   defp client_and_device_id(opts) do
-    client = EXLA.Client.fetch!(opts[:client] || default_client_name())
+    client = EXLA.Client.fetch!(opts[:client] || EXLA.Client.default_name())
     device_id = opts[:device_id] || client.default_device_id
     {client, device_id}
   end
@@ -300,5 +292,5 @@ defmodule EXLA.Backend do
     end
   end
 
-  defp jit(fun, args), do: EXLA.jit(fun, args, force: true)
+  defp jit(fun, args), do: EXLA.jit_apply(fun, args, on_conflict: :force)
 end
