@@ -150,6 +150,25 @@ defmodule Nx.Defn.Compiler do
   ## Compiler
 
   @doc false
+  def __case__(arg) when is_tuple(arg) do
+    arg |> Tuple.to_list() |> Enum.each(&__case__/1)
+    arg
+  end
+
+  def __case__(arg) when is_integer(arg) or is_atom(arg) do
+    arg
+  end
+
+  def __case__(arg) do
+    raise ArgumentError, """
+    only tuples, atoms, and numbers are allowed as arguments to case/2 inside defn.
+    Got: #{inspect(arg)}
+
+    Consider using deftransform/2 or deftransformp/2 if you need to handle more complex cases
+    """
+  end
+
+  @doc false
   def __remote__(module, function, defn, args) do
     try do
       apply(module, defn, args)
@@ -189,25 +208,37 @@ defmodule Nx.Defn.Compiler do
 
   @doc false
   def __compile__(%Macro.Env{module: module, file: file, line: line}, exports) do
-    defns =
-      for {{name, arity}, %{defaults: defaults}} <- exports,
-          arity <- (arity - map_size(defaults))..arity,
-          do: {name, arity}
+    {defn_exports, transform_exports} =
+      Enum.split_with(exports, fn {_fun_arity, meta} -> meta.type == :numerical end)
+
+    defns = compile_prepare_arities(defn_exports)
+    transforms = compile_prepare_arities(transform_exports)
 
     state = %{
       module: module,
       file: file,
       line: line,
       function: nil,
-      defns: MapSet.new(defns),
+      defns: defns,
+      transforms: transforms,
       rewrite_underscore?: false
     }
 
-    quoted = Enum.map(exports, &compile_each(&1, state))
+    quoted =
+      Enum.map(transform_exports, &compile_each_transform(&1, state)) ++
+        Enum.map(defn_exports, &compile_each_defn(&1, state))
+
     {:__block__, [], quoted}
   end
 
-  defp compile_each({{name, arity} = def, def_meta}, state) do
+  defp compile_prepare_arities(definitions) do
+    for {{name, arity}, %{defaults: defaults}} <- definitions,
+        arity <- (arity - map_size(defaults))..arity,
+        into: MapSet.new(),
+        do: {name, arity}
+  end
+
+  defp compile_each_defn({{name, arity} = def, def_meta}, state) do
     %{defaults: defaults} = def_meta
     {{kind, _meta, args, ast}, state} = get_and_normalize_definition(def, state)
 
@@ -254,6 +285,25 @@ defmodule Nx.Defn.Compiler do
     end
   end
 
+  defp compile_each_transform({{name, max_arity}, _def_meta}, state) do
+    defn_name = defn_name(name)
+
+    # {...} <- [Module...] is a trick so we can skip nil definitions for a given arity
+    ast =
+      for defn_arity <- 0..max_arity,
+          {:v1, kind, meta, _clauses} <- [Module.get_definition(state.module, {name, defn_arity})] do
+        defn_args = Macro.generate_arguments(defn_arity, __MODULE__)
+
+        quote line: meta[:line] do
+          Kernel.unquote(kind)(unquote(defn_name)(unquote_splicing(defn_args)),
+            do: unquote(name)(unquote_splicing(defn_args))
+          )
+        end
+      end
+
+    {:__block__, [], ast}
+  end
+
   @doc false
   def __runtime__(fun, args) do
     {compiler, compiler_opts} =
@@ -272,9 +322,11 @@ defmodule Nx.Defn.Compiler do
     {:v1, kind, meta, clauses} = Module.get_definition(state.module, def)
     state = %{state | function: def, line: meta[:line] || state.line, rewrite_underscore?: true}
 
+    type_str = if kind == :def, do: "defn", else: "defnp"
+
     case clauses do
       [] ->
-        compile_error!(meta, state, "cannot have #{kind}n without clauses")
+        compile_error!(meta, state, "cannot have #{type_str} without clauses")
 
       [{meta, args, [], ast}] ->
         {args, state} = normalize_args(args, meta, state)
@@ -282,7 +334,7 @@ defmodule Nx.Defn.Compiler do
         {{kind, meta, args, ast}, state}
 
       [_, _ | _] ->
-        compile_error!(meta, state, "cannot compile #{kind}n with multiple clauses")
+        compile_error!(meta, state, "cannot compile #{type_str} with multiple clauses")
     end
   end
 
@@ -337,6 +389,51 @@ defmodule Nx.Defn.Compiler do
     {{:fn, meta, clauses}, state}
   end
 
+  defp normalize({:case, meta, [expr, [do: clauses]]}, state) do
+    {expr, state} = normalize(expr, state)
+
+    {clauses, state} =
+      Enum.map_reduce(clauses, state, fn {:->, clause_meta, [[head], body]}, state ->
+        {when_meta, pattern, guard} =
+          case head do
+            {:when, when_meta, [pattern, guard]} -> {when_meta, pattern, guard}
+            _ -> {clause_meta, head, true}
+          end
+
+        {pattern, vars} =
+          Macro.postwalk(pattern, %{}, fn
+            {var, _meta, ctx} = triplet, acc when is_atom(var) and is_atom(ctx) ->
+              {normalize_var(triplet), Map.put(acc, {var, ctx}, true)}
+
+            other, acc ->
+              {other, acc}
+          end)
+
+        guard =
+          Macro.postwalk(guard, fn
+            {var, _meta, ctx} = triplet when is_atom(var) and is_atom(ctx) ->
+              if is_map_key(vars, {var, ctx}) do
+                normalize_var(triplet)
+              else
+                compile_error!(
+                  clause_meta,
+                  state,
+                  "case/2 in defn allow guards to only access variables defined in patterns. Got: #{var}"
+                )
+              end
+
+            other ->
+              other
+          end)
+
+        {body, state} = normalize(body, state)
+        {{:->, clause_meta, [[{:when, when_meta, [pattern, guard]}], body]}, state}
+      end)
+
+    wrapped = {{:., meta, [__MODULE__, :__case__]}, meta, [expr]}
+    {{:case, meta, [wrapped, [do: clauses]]}, state}
+  end
+
   defp normalize({:cond, meta, [[do: clauses]]}, state) do
     {[{last_meta, {last_condition, last_expr}} | rest], state} =
       Enum.reduce(clauses, {[], state}, fn {:->, meta, [[condition], expr]}, {acc, state} ->
@@ -375,7 +472,7 @@ defmodule Nx.Defn.Compiler do
     pair = {name, arity}
 
     cond do
-      pair in state.defns ->
+      pair in state.defns or pair in state.transforms ->
         {args, state} = normalize_list(args, state)
         {{defn_name(name), meta, args}, state}
 
