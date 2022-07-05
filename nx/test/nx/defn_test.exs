@@ -243,6 +243,26 @@ defmodule Nx.DefnTest do
   describe "unary ops" do
     defn exp(t), do: Nx.exp(t)
 
+    defn unary_plus_minus_guards(opts \\ []) do
+      case opts[:value] do
+        value when value == -2 ->
+          -1
+
+        value when value == +2 ->
+          1
+      end
+    end
+
+    defn unary_plus_minus_match(opts \\ []) do
+      case opts[:value] do
+        -2 ->
+          -1
+
+        +2 ->
+          1
+      end
+    end
+
     test "to expr" do
       assert %T{shape: {3}, type: {:f, 32}, data: %Expr{op: :exp, args: [_]}} =
                exp(Nx.tensor([1, 2, 3]))
@@ -252,6 +272,13 @@ defmodule Nx.DefnTest do
 
       assert %T{shape: {3}, type: {:bf, 16}, data: %Expr{op: :exp, args: [_]}} =
                exp(Nx.tensor([1, 2, 3], type: {:bf, 16}))
+    end
+
+    test "unary + and - work with guards and hard matches" do
+      assert Expr.tensor(-1) == unary_plus_minus_guards(value: -2)
+      assert Expr.tensor(1) == unary_plus_minus_guards(value: 2)
+      assert Expr.tensor(-1) == unary_plus_minus_match(value: -2)
+      assert Expr.tensor(1) == unary_plus_minus_match(value: 2)
     end
   end
 
@@ -583,44 +610,31 @@ defmodule Nx.DefnTest do
     defn land_two(a, b), do: a and b
 
     defn land_true(a) do
-      val = constant_boolean_transform()
-      val and a
+      true and a
     end
 
     test "and" do
       assert %T{data: %Expr{op: :logical_and, args: [_, _]}} = land_two(1, 2)
-
-      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.and\/2/, fn ->
-        land_true(2)
-      end
     end
 
     defn lor_two(a, b), do: a or b
 
-    defn lor_true(a) do
-      val = constant_boolean_transform()
-      val or a
+    defn lor_true(opts \\ []) do
+      true or opts[:value]
     end
 
     test "or" do
       assert %T{data: %Expr{op: :logical_or, args: [_, _]}} = lor_two(1, 2)
-
-      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.or\/2/, fn ->
-        lor_true(2)
-      end
     end
 
     defn lnot(a), do: not a
-    defn lnot_true(), do: not constant_boolean_transform()
+    defn lnot_boolean(opts \\ []), do: not constant_boolean_transform(opts)
 
-    deftransformp(constant_boolean_transform, do: true)
-
-    test "not" do
-      assert %T{data: %Expr{op: :optional, args: [%T{data: %Expr{op: :logical_not}}, _]}} =
-               lnot(1)
-
-      assert_raise ArgumentError, ~r/boolean value passed to Nx.Defn.Kernel.not\/1/, fn ->
-        lnot_true()
+    deftransformp constant_boolean_transform(opts) do
+      if opts[:value] == true do
+        true
+      else
+        false
       end
     end
 
@@ -959,8 +973,8 @@ defmodule Nx.DefnTest do
     test "IO remote" do
       assert_raise RuntimeError,
                    "cannot invoke IO.inspect/1 inside defn because it was not defined with defn. " <>
-                     "To print the runtime value of a tensor, use inspect_value/2. " <>
-                     "To print the tensor expression, use inspect_expr/2",
+                     "To print the runtime value of a tensor, use print_value/2. " <>
+                     "To print the tensor expression, use print_expr/2",
                    fn -> add_two_io(1, 2) end
     end
   end
@@ -1159,6 +1173,108 @@ defmodule Nx.DefnTest do
     end
   end
 
+  describe "case/2" do
+    defn simple_rank(tensor) do
+      case Nx.shape(tensor) do
+        {} -> 0
+        {_} -> 1
+        {_, _} -> 2
+      end
+    end
+
+    defn tuple_rank(tensorA, tensorB) do
+      case {Nx.shape(tensorA), Nx.shape(tensorB)} do
+        {{}, {}} -> 0
+        {{_}, {}} -> -1
+        {{}, {_}} -> 1
+      end
+    end
+
+    defn guard_rank(tensor) do
+      case Nx.shape(tensor) do
+        {x, x} -> 0
+        {x, y} when x > y -> -1
+        {x, y} when x < y -> 1
+      end
+    end
+
+    defn invalid_case(tensor) do
+      case tensor do
+        _ -> 0
+      end
+    end
+
+    test "matches shapes" do
+      assert simple_rank(123) == Expr.tensor(0)
+      assert simple_rank(Nx.tensor([1, 2, 3])) == Expr.tensor(1)
+      assert simple_rank(Nx.tensor([[1, 2, 3]])) == Expr.tensor(2)
+    end
+
+    test "matches tuples shapes" do
+      assert tuple_rank(0, 0) == Expr.tensor(0)
+      assert tuple_rank(Nx.tensor([1, 2, 3]), 0) == Expr.tensor(-1)
+      assert tuple_rank(0, Nx.tensor([1, 2, 3])) == Expr.tensor(1)
+    end
+
+    test "matches using guards" do
+      assert guard_rank(Nx.iota({2, 2})) == Expr.tensor(0)
+      assert guard_rank(Nx.iota({3, 2})) == Expr.tensor(-1)
+      assert guard_rank(Nx.iota({2, 3})) == Expr.tensor(1)
+    end
+
+    test "raises if not tuple, atom, integer" do
+      assert_raise ArgumentError,
+                   ~r"only tuples, atoms, and numbers are allowed as arguments to case/2 inside defn",
+                   fn -> invalid_case(Nx.tensor(0)) end
+    end
+
+    test "raises on outside variables in guards" do
+      assert_raise CompileError,
+                   ~r"case/2 in defn allow guards to only access variables defined in patterns",
+                   fn ->
+                     defmodule Fail do
+                       defn invalid_case(y) do
+                         case y do
+                           x when x > y -> 1
+                         end
+                       end
+                     end
+                   end
+    end
+  end
+
+  describe "raise/2" do
+    defn raise_argument_error(tensor) do
+      case Nx.shape(tensor) do
+        {n, n} -> n
+        shape -> raise ArgumentError, "expected a square tensor: #{inspect(shape)}"
+      end
+    end
+
+    test "raises ArgumentError" do
+      assert raise_argument_error(Nx.iota({4, 4})) == Expr.tensor(4)
+
+      assert_raise ArgumentError, "expected a square tensor: {4, 3}", fn ->
+        raise_argument_error(Nx.iota({4, 3}))
+      end
+    end
+
+    defn raise_runtime_error(tensor) do
+      case Nx.shape(tensor) do
+        {n, n} -> n
+        shape -> raise "expected a square tensor: " <> inspect(shape)
+      end
+    end
+
+    test "raises RuntimeError" do
+      assert raise_runtime_error(Nx.iota({4, 4})) == Expr.tensor(4)
+
+      assert_raise RuntimeError, "expected a square tensor: {4, 3}", fn ->
+        raise_runtime_error(Nx.iota({4, 3}))
+      end
+    end
+  end
+
   describe "while/3" do
     defn upto10(x) do
       while x, Nx.less(x, 10) do
@@ -1293,11 +1409,11 @@ defmodule Nx.DefnTest do
 
   describe "transform" do
     defn transform_inspect(a, b) do
-      (Nx.tanh(a) + Nx.power(b, 3)) |> inspect_expr()
+      (Nx.tanh(a) + Nx.power(b, 3)) |> print_expr()
     end
 
     defn transform_inspect_label(a, b) do
-      (Nx.tanh(a) + Nx.power(b, 3)) |> inspect_expr(label: "HELLO")
+      (Nx.tanh(a) + Nx.power(b, 3)) |> print_expr(label: "HELLO")
     end
 
     test "executes the transformation" do
@@ -1726,6 +1842,40 @@ defmodule Nx.DefnTest do
       assert Nx.tensor(10) == multi_clause_transform_bodiless3(10)
       assert Nx.tensor(10) == multi_clause_transform_bodiless4(a: 1, b: 10)
       assert Nx.tensor(20) == multi_clause_transform_bodiless4(a: 20, b: 10)
+    end
+  end
+
+  describe "boolean values" do
+    defn supports_booleans(opts \\ []) do
+      l = opts[:l]
+      r = opts[:r]
+
+      Nx.stack([l < r, l <= r, l > r, l >= r, l == r, l != r, l and r, l or r, not l, not r])
+    end
+
+    @tag compiler: Evaluator
+    test "supports booleans in some operations" do
+      for l <- [true, false, 1, 0], r <- [true, false, 1, 0] do
+        lb = l == 1 or l == true
+        rb = r == 1 or r == true
+
+        ln = if lb, do: 1, else: 0
+        rn = if rb, do: 1, else: 0
+
+        assert supports_booleans(l: l, r: r) ==
+                 Nx.tensor([
+                   ln < rn,
+                   ln <= rn,
+                   ln > rn,
+                   ln >= rn,
+                   ln == rn,
+                   ln != rn,
+                   lb and rb,
+                   lb or rb,
+                   not lb,
+                   not rb
+                 ])
+      end
     end
   end
 end

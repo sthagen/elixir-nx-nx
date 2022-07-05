@@ -290,7 +290,7 @@ defmodule Nx.Shared do
       defmacro unquote(name)(unquote_splicing(args)) do
         {module, name} =
           case __CALLER__.context do
-            :guard -> {Kernel, unquote(name)}
+            ctx when ctx in [:guard, :match] -> {Kernel, unquote(name)}
             _ -> {__MODULE__, unquote(fallback)}
           end
 
@@ -377,7 +377,9 @@ defmodule Nx.Shared do
   @doc """
   Builds the type of an element-wise binary operation.
   """
-  def binary_type(a, b) when is_number(a) and is_number(b), do: Nx.Type.infer(a + b)
+  def binary_type(a, b) when is_number(a) and is_number(b),
+    do: Nx.Type.infer(a + b)
+
   def binary_type(a, b) when is_number(a), do: Nx.Type.merge_number(type(b), a)
   def binary_type(a, b) when is_number(b), do: Nx.Type.merge_number(type(a), b)
   def binary_type(a, b), do: Nx.Type.merge(type(a), type(b))
