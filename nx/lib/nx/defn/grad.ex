@@ -74,7 +74,7 @@ defmodule Nx.Defn.Grad do
                [:bitwise_and, :bitwise_or, :bitwise_xor, :bitwise_not] ++
                [:logical_and, :logical_or, :logical_xor, :logical_not] ++
                [:left_shift, :right_shift, :count_leading_zeros, :population_count] ++
-               [:floor, :round, :ceil, :sign] ++
+               [:floor, :round, :ceil, :sign, :is_nan] ++
                [:equal, :greater, :greater_equal, :less, :less_equal, :not_equal, :argsort]
 
   defp parents_tree(expr, nodes) do
@@ -416,6 +416,26 @@ defmodule Nx.Defn.Grad do
     update_t = Nx.slice(g, start_indices, Tuple.to_list(Nx.shape(update)))
 
     [{x, operand_t}, {update, update_t}]
+  end
+
+  defp grad(:indexed_put, [target, indices, updates], _ans, g) do
+    zeros = Nx.broadcast(Expr.tensor(0.0), updates)
+
+    target_g = Nx.indexed_put(g, indices, zeros)
+    updates_g = g |> Nx.gather(indices) |> Nx.reshape(updates.shape)
+    indices_g = Nx.broadcast(Expr.tensor(0.0), indices)
+
+    [{target, target_g}, {indices, indices_g}, {updates, updates_g}]
+  end
+
+  defp grad(:indexed_add, [target, indices, updates], _ans, g) do
+    zeros = Nx.broadcast(Expr.tensor(0.0), updates)
+
+    target_g = Nx.indexed_add(g, indices, zeros)
+    updates_g = g |> Nx.gather(indices) |> Nx.reshape(updates.shape)
+    indices_g = Nx.broadcast(Expr.tensor(0.0), indices)
+
+    [{target, target_g}, {indices, indices_g}, {updates, updates_g}]
   end
 
   defp grad(:reverse, [x, axes], _ans, g) do
