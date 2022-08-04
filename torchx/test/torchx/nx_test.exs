@@ -368,6 +368,26 @@ defmodule Torchx.NxTest do
       assert_equal(t, Nx.tensor([[0, 1, 2], [3, 4, 5]]))
     end
 
+    test "broadcast without axes" do
+      out = Nx.broadcast(1, {1, 2, 3})
+      assert_equal(out, Nx.tensor([[[1, 1, 1], [1, 1, 1]]]))
+    end
+
+    test "broadcast with axes" do
+      t = Nx.tensor([1, 2, 3])
+      out = Nx.broadcast(t, {3, 2}, axes: [0])
+      assert_equal(out, Nx.tensor([[1, 1], [2, 2], [3, 3]]))
+    end
+
+    test "broadcast raises when expanded and existing sizes do not match" do
+      t = Nx.tensor([1, 2, 3])
+
+      assert_raise(
+        RuntimeError,
+        fn -> Nx.broadcast(t, {2, 3, 2}, axes: [1]) end
+      )
+    end
+
     test "dot with vectors" do
       t1 = Nx.tensor([1, 2, 3])
       t2 = Nx.tensor([4, 5, 6])
@@ -418,18 +438,6 @@ defmodule Torchx.NxTest do
           ]
         ])
       )
-    end
-
-    test "dot currently raises when using batching" do
-      # Batching not supported for now. Once it is
-      # supported doctests for dot should be restablished
-
-      t1 = Nx.iota({3, 2, 4, 1})
-      t2 = Nx.iota({3, 4, 2, 2})
-
-      assert_raise(FunctionClauseError, fn ->
-        Nx.dot(t1, [1, 2], [0], t2, [2, 1], [0])
-      end)
     end
 
     test "make_diagonal" do
