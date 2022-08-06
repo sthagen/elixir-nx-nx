@@ -258,16 +258,39 @@ defmodule Nx do
       >
 
   As you can see, accessing with a range does not eliminate the
-  accessed axis, therefore, when wanting to slice across multiple
-  axes with ranges, it is often desired to use a list:
+  accessed axis. This means that, if you try to cascade ranges,
+  you will always be filtering the highest dimension:
 
-      iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]])
-      iex> t[[1..2, 1..2]]
+      iex> t = Nx.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])
+      iex> t[1..-1//1] # Drop the first "row"
+      #Nx.Tensor<
+        s64[3][2]
+        [
+          [3, 4],
+          [5, 6],
+          [7, 8]
+        ]
+      >
+      iex> t[1..-1//1][1..-1//1] # Drop the first "row" twice
       #Nx.Tensor<
         s64[2][2]
         [
           [5, 6],
-          [8, 9]
+          [7, 8]
+        ]
+      >
+
+  Therefore, if you want to slice across multiple dimensions, you can wrap
+  the ranges in a list:
+
+      iex> t = Nx.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])
+      iex> t[[1..-1//1, 1..-1//1]] # Drop the first "row" and the first "column"
+      #Nx.Tensor<
+        s64[3][1]
+        [
+          [4],
+          [6],
+          [8]
         ]
       >
 
@@ -293,9 +316,9 @@ defmodule Nx do
         ]
       >
 
-  The access syntax also pairs nicely with named tensors. By
-  using named tensors, you can pass only the axis you want to
-  slice, leaving the other axis intact:
+  The access syntax also pairs nicely with named tensors. By using named
+  tensors, you can pass only the axis you want to slice, leaving the other
+  axes intact:
 
       iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]], names: [:x, :y])
       iex> t[x: 1..2]
@@ -9226,8 +9249,9 @@ defmodule Nx do
   Both start indices and lengths must match the rank of the
   input tensor shape. All start indexes must be greater than
   or equal to zero. All lengths must be strictly greater than
-  zero. `start_index + length` must not exceed the respective
-  tensor dimension.
+  zero. If `start_index + length` exceeds the tensor dimension,
+  the `start_index` will be clipped in order to guarantee the
+  `length` is the requested one. See the "Clipping" section below.
 
   It is possible for `start_indices` to be a list of tensors.
   However, `lengths` must always be a list of integers. If you
@@ -9241,7 +9265,7 @@ defmodule Nx do
   `slice_along_axis/4`, `take/3`, and `take_along_axis/3` for other ways
   to retrieve values from a tensor.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.slice(Nx.tensor([1, 2, 3, 4, 5, 6]), [0], [3])
       #Nx.Tensor<
@@ -9292,6 +9316,8 @@ defmodule Nx do
         ]
       >
 
+  ## Tensors as `start_indices`
+
   The `start_indices` list can be made of scalar tensors:
 
       iex> Nx.slice(Nx.tensor([[1, 2, 3], [4, 5, 6]]), [Nx.tensor(1), Nx.tensor(2)], [1, 1])
@@ -9319,7 +9345,34 @@ defmodule Nx do
         ]
       >
 
-  ### Error cases
+  ## Clipping
+
+  `slice/3` will always guarantee the return tensor has the
+  given `lengths`. See the following example:
+
+      iex> Nx.slice(Nx.iota({3, 3}), [2, 2], [1, 1])
+      #Nx.Tensor<
+        s64[1][1]
+        [
+          [8]
+        ]
+      >
+
+  In the example above, `start_index + length <= dimension`,
+  so there is no clipping. However, if the `start_index + length`
+  is to exceed the dimension, the index will be clipped in order
+  to guarantee the given lengths:
+
+      iex> Nx.slice(Nx.iota({3, 3}), [2, 2], [2, 2])
+      #Nx.Tensor<
+        s64[2][2]
+        [
+          [4, 5],
+          [7, 8]
+        ]
+      >
+
+  ## Error cases
 
       iex> Nx.slice(Nx.tensor([[1, 2, 3], [4, 5, 6]]), [Nx.tensor([1, 2]), Nx.tensor(1)], [1, 1])
       ** (ArgumentError) index must be scalar, got shape {2} for axis 0
@@ -9462,7 +9515,7 @@ defmodule Nx do
       >
 
       iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6]])
-      iex> Nx.put_slice(t, [1, 2], Nx.tensor([[7, 8], [9, 10]]))
+      iex> Nx.put_slice(t, [1, 1], Nx.tensor([[7, 8], [9, 10]]))
       #Nx.Tensor<
         s64[2][3]
         [
@@ -9471,15 +9524,7 @@ defmodule Nx do
         ]
       >
 
-      iex> t = Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-      iex> Nx.put_slice(t, [2, 2], Nx.tensor([[7.0, 8.0, 9.0], [10.0, 11.0, 12.0]]))
-      #Nx.Tensor<
-        f32[2][3]
-        [
-          [7.0, 8.0, 9.0],
-          [10.0, 11.0, 12.0]
-        ]
-      >
+  Similar to `slice/3`, dynamic start indexes are also supported:
 
       iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6]])
       iex> Nx.put_slice(t, [Nx.tensor(0), Nx.tensor(2)], Nx.tensor([[10.0, 11.0]]))
@@ -9488,6 +9533,19 @@ defmodule Nx do
         [
           [1.0, 10.0, 11.0],
           [4.0, 5.0, 6.0]
+        ]
+      >
+
+  Also similar to `slice/3`, if `start_index + slice_dimension > dimension`,
+  the start index will be clipped in order to put the whole slice:
+
+      iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6]])
+      iex> Nx.put_slice(t, [2, 2], Nx.tensor([[7, 8], [9, 10]]))
+      #Nx.Tensor<
+        s64[2][3]
+        [
+          [1, 7, 8],
+          [4, 9, 10]
         ]
       >
   """
