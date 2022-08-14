@@ -1810,7 +1810,7 @@ defmodule Nx.Defn.GradTest do
                Nx.tensor([[-1.1943799, 0.84147096], [-0.06782645, -0.42073548]])
 
       assert exp_cholesky_grad(t) ==
-               Nx.tensor([[-0.5299541, -0.88652998], [3.59515929, 6.550619]])
+               Nx.tensor([[-0.5299541, -0.8865298], [3.59515953, 6.550619]])
     end
   end
 
@@ -1924,6 +1924,61 @@ defmodule Nx.Defn.GradTest do
           6.1484942i 0.76084137
           5.0678897 6.7508316i
         ]
+      )
+    end
+  end
+
+  describe "svd" do
+    defn svd_grad(t) do
+      grad(t, fn tensor ->
+        {u, s, vt} = Nx.LinAlg.svd(tensor)
+
+        s
+        |> Nx.make_diagonal()
+        |> Nx.add(u)
+        |> Nx.add(vt)
+        |> Nx.sum()
+      end)
+    end
+
+    defn svd_composed_grad(t) do
+      grad(t, fn tensor ->
+        {u, s, vt} = Nx.LinAlg.svd(tensor)
+
+        s
+        |> Nx.make_diagonal()
+        |> Nx.exp()
+        |> Nx.sum()
+        |> Nx.add(Nx.cos(u) |> Nx.sum())
+        |> Nx.add(Nx.sin(vt) |> Nx.sum())
+      end)
+    end
+
+    test "computes grad for tensor" do
+      assert_all_close(
+        svd_grad(Nx.tensor([[3, 0], [1, 2]])),
+        Nx.tensor([
+          [1.8970632553100586, -1.130002737045288],
+          [-0.7087637782096863, 0.05829668045043945]
+        ])
+      )
+    end
+
+    test "computes the composed grad for tensor" do
+      assert_all_close(
+        svd_composed_grad(Nx.tensor([[3, 0], [1, 2]])),
+        Nx.tensor([[23.213549, 3.1363947], [9.804395, 8.365231]])
+      )
+    end
+
+    test "computes the composed grad for tall tensor" do
+      assert_all_close(
+        svd_composed_grad(Nx.tensor([[3, 0], [1, 2], [1, 1]])),
+        Nx.tensor([
+          [25.680400848388672, 6.340582847595215],
+          [12.773930549621582, 11.075220108032227],
+          [10.668397903442383, 6.5805983543396]
+        ])
       )
     end
   end
@@ -3636,6 +3691,188 @@ defmodule Nx.Defn.GradTest do
       expected = cosx_tn |> Nx.cos() |> Nx.multiply(Nx.subtract(1, Nx.sin(t)))
 
       assert_all_close(expected, grad_indexed_add_simultaneous_composite(t, i))
+    end
+  end
+
+  describe "triangular_solve" do
+    defn triangular_solve_grad_wrt_a(a, b, opts \\ []) do
+      grad(a, fn a ->
+        a
+        |> Nx.LinAlg.triangular_solve(b, opts)
+        |> Nx.sum()
+      end)
+    end
+
+    defn triangular_solve_grad_wrt_b(a, b, opts \\ []) do
+      grad(b, fn b ->
+        a
+        |> Nx.LinAlg.triangular_solve(b, opts)
+        |> Nx.sum()
+      end)
+    end
+
+    defn triangular_solve_composed_grad_wrt_a(a, b, opts \\ []) do
+      grad(a, fn a ->
+        a
+        |> Nx.sin()
+        |> Nx.LinAlg.triangular_solve(Nx.cos(b), opts)
+        |> Nx.sin()
+        |> Nx.sum()
+      end)
+    end
+
+    defn triangular_solve_composed_grad_wrt_b(a, b, opts \\ []) do
+      grad(b, fn b ->
+        a
+        |> Nx.sin()
+        |> Nx.LinAlg.triangular_solve(Nx.cos(b), opts)
+        |> Nx.sin()
+        |> Nx.sum()
+      end)
+    end
+
+    test "computes the simple grad for tensor wrt a" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([4, 3, 2])
+
+      assert_all_close(
+        triangular_solve_grad_wrt_a(a, b, lower: false),
+        Nx.tensor([[-1, -1, -2], [0, 0, 0], [0, 0, 0]])
+      )
+    end
+
+    test "computes the simple grad for tensor wrt b" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([4, 3, 2])
+
+      assert_all_close(
+        triangular_solve_grad_wrt_b(a, b, lower: false),
+        Nx.tensor([1, 0, 0])
+      )
+    end
+
+    test "computes the composed grad for tensor wrt a" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([4, 3, 2])
+
+      assert_all_close(
+        triangular_solve_composed_grad_wrt_a(a, b, lower: false),
+        Nx.tensor([
+          [-0.23642, 0.40336, 0.29251],
+          [0.0, -0.06342, -0.04599],
+          [0.0, 0.0, 0.03297]
+        ])
+      )
+    end
+
+    test "computes the composed grad for tensor wrt a lower: true" do
+      a =
+        Nx.tensor([
+          [1, 0, 0],
+          [1, 1, 0],
+          [1, 1, 1]
+        ])
+
+      b = Nx.tensor([2, 3, 4])
+
+      assert_all_close(
+        triangular_solve_composed_grad_wrt_a(a, b, lower: true),
+        Nx.tensor([
+          [0.03297454, 0.0, 0.0],
+          [-0.04599008, -0.06341801, 0.0],
+          [0.29251346, 0.40336132, -0.23642266]
+        ])
+      )
+    end
+
+    test "computes the grad for tensor wrt a lower: true, transform_a: :transpose" do
+      a =
+        Nx.tensor([
+          [1, 0, 0],
+          [1, 1, 0],
+          [1, 1, 1]
+        ])
+
+      b = Nx.tensor([2, 3, 4])
+
+      assert_all_close(
+        triangular_solve_grad_wrt_a(a, b, transform_a: :transpose, lower: true),
+        Nx.tensor([
+          [1, 0, 0],
+          [1, 0, 0],
+          [-4, 0, 0]
+        ])
+      )
+    end
+
+    test "computes the composed grad for tensor wrt b" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([4, 3, 2])
+
+      assert_all_close(
+        triangular_solve_composed_grad_wrt_b(a, b, lower: false),
+        Nx.tensor([0.8284839, 0.02428892, -0.11221229])
+      )
+    end
+
+    test "computes the composed grad for tensor wrt a left_side: false" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([2, 3, 4])
+
+      assert_all_close(
+        triangular_solve_composed_grad_wrt_a(a, b, left_side: false, lower: false),
+        Nx.tensor([
+          [0.03297454, -0.04599008, 0.29251346],
+          [0.0, -0.06341801, 0.40336132],
+          [0.0, 0.0, -0.23642266]
+        ])
+      )
+    end
+
+    test "computes the composed grad for tensor wrt b left_side: false" do
+      a =
+        Nx.tensor([
+          [1, 1, 1],
+          [0, 1, 1],
+          [0, 0, 1]
+        ])
+
+      b = Nx.tensor([2, 3, 4])
+
+      assert_all_close(
+        triangular_solve_composed_grad_wrt_b(a, b, left_side: false, lower: false),
+        Nx.tensor([-0.11221229, 0.02428893, 0.82848394])
+      )
     end
   end
 

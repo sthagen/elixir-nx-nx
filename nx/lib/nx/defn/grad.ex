@@ -623,6 +623,82 @@ defmodule Nx.Defn.Grad do
     [{input, da}]
   end
 
+  defp grad(
+         :svd,
+         [
+           {%{shape: {m, m}} = u, %{shape: {k}} = s, %{shape: {n, n}} = vt},
+           %T{shape: {m, n}} = input,
+           _opts
+         ],
+         ans,
+         [du, ds, dvt]
+       ) do
+    {u, s_input, vt} = Nx.Defn.Expr.tuple(ans, [u, s, vt])
+
+    if m < n do
+      raise "grad for Nx.LinAlg.svd/2 not implemented for the wide matrix case"
+    end
+
+    u =
+      if m == n do
+        u
+      else
+        Nx.slice(u, [0, 0], [m, k])
+      end
+
+    du =
+      if m == n do
+        du
+      else
+        Nx.slice(du, [0, 0], [m, k])
+      end
+
+    # https://j-towns.github.io/papers/svd-derivative.pdf
+
+    eye_k = Nx.eye(k)
+    eye_m = Nx.eye(m)
+    eye_n = Nx.eye(n)
+
+    s_sq = Nx.power(s_input, 2)
+    sub = s_sq |> Nx.new_axis(1) |> Nx.subtract(s_sq) |> Nx.negate() |> Nx.add(eye_k)
+    f = Nx.select(eye_k, 0, Nx.divide(1, sub))
+
+    s = s_input |> Nx.make_diagonal()
+    s_inv = 1 |> Nx.divide(s_input) |> Nx.make_diagonal()
+
+    ut_du =
+      u |> Nx.LinAlg.adjoint() |> Nx.dot(du) |> Nx.subtract(Nx.dot(Nx.LinAlg.adjoint(du), u))
+
+    first_component_du = u |> Nx.dot(Nx.multiply(f, ut_du)) |> Nx.dot(s)
+
+    second_component_du =
+      eye_m
+      |> Nx.subtract(Nx.dot(u, Nx.LinAlg.adjoint(u)))
+      |> Nx.dot(du)
+      |> Nx.dot(s_inv)
+
+    du_component = first_component_du |> Nx.add(second_component_du) |> Nx.dot(vt)
+
+    ds_component = u |> Nx.dot(Nx.multiply(eye_k, ds)) |> Nx.dot(vt)
+
+    first_dvt_component =
+      vt
+      |> Nx.dot(Nx.LinAlg.adjoint(dvt))
+      |> Nx.subtract(Nx.dot(dvt, Nx.LinAlg.adjoint(vt)))
+      |> Nx.multiply(f)
+
+    first_dvt_component = s |> Nx.dot(first_dvt_component) |> Nx.dot(vt)
+
+    second_dvt_component =
+      s_inv |> Nx.dot(dvt) |> Nx.dot(Nx.subtract(eye_n, Nx.dot(Nx.LinAlg.adjoint(vt), vt)))
+
+    dvt_component = Nx.dot(u, Nx.add(first_dvt_component, second_dvt_component))
+
+    da = du_component |> Nx.add(ds_component) |> Nx.add(dvt_component)
+
+    [{input, da}]
+  end
+
   defp grad(:sort, [t, opts], _ans, g) do
     idx = Nx.argsort(t, opts)
     take_along_opts = Keyword.take(opts, [:axis])
@@ -1018,6 +1094,87 @@ defmodule Nx.Defn.Grad do
 
   defp grad(:fft, args, ans, g), do: grad_fft(:fft, args, ans, g)
   defp grad(:ifft, args, ans, g), do: grad_fft(:ifft, args, ans, g)
+
+  defp grad(:triangular_solve, [a_input, b, opts], x_input, g) do
+    # We can model the triangular solve function as X = triangular_solve(a, b)
+    # where the function itself depends on the options passed.
+
+    # We can ignore in our calculations the 'lower' option because in all cases we are operating on some form of triangular_solve(A, B) === inv(A).B or B.inv(A)
+    # This only needs to be taken into account for the result `da`
+
+    # Therefore, we need to account for left_side and transform_a.
+    # The transformations are :none, :transpose and :conjugate,
+    # all of which can be applied beforehand to the a matrix.
+
+    # This means we can bifurcate the code through the left_side option
+    a =
+      case opts[:transform_a] do
+        :none -> a_input
+        :transpose -> Nx.transpose(a_input)
+      end
+
+    a_inv_hermitian = Nx.LinAlg.invert(Nx.LinAlg.adjoint(a))
+
+    x =
+      case {Nx.shape(x_input), opts[:left_side]} do
+        {{n}, true} -> Nx.reshape(x_input, {n, 1})
+        {{n}, false} -> Nx.reshape(x_input, {1, n})
+        _ -> x_input
+      end
+
+    g =
+      case {Nx.shape(g), opts[:left_side]} do
+        {{n}, true} -> Nx.reshape(g, {n, 1})
+        {{n}, false} -> Nx.reshape(g, {1, n})
+        _ -> g
+      end
+
+    {da, db} =
+      if opts[:left_side] do
+        # A.X = B -> X = inv(A).B
+        # taking the forward-mode derivative from both sides, we reach the expression:
+        # dX = -inv(A).dA.X + inv(A).dB
+        # then, we can develop the dot operator <X_bar, dX> to obtain A_bar and B_bar,
+        # which are the reverse-mode derivatives w.r.t A and B:
+        # <X_bar, dX> = <X_bar, -inv(A).dA.X> + <X_bar, inv(A).dB>
+        # = <-inv(A^H).X_bar.X^H, dA> + <inv(A^H).X_bar, dB>
+        # which means that:
+        # A_bar = inv(A^H).X_bar.X^H
+        # B_bar = inv(A^H).X_bar
+        da = a_inv_hermitian |> Nx.dot(g |> Nx.dot(Nx.LinAlg.adjoint(x))) |> Nx.negate()
+        db = Nx.dot(a_inv_hermitian, g)
+        {da, db}
+      else
+        # X.A = B -> X = B.inv(A)
+        # taking a similar approach to the branch above, we get
+        # A_bar = -X^H.X_bar.inv(A^H)
+        # B_bar = X_bar.inv(A^H)
+        da = x |> Nx.LinAlg.adjoint() |> Nx.dot(g) |> Nx.dot(a_inv_hermitian) |> Nx.negate()
+        db = Nx.dot(g, a_inv_hermitian)
+        {da, db}
+      end
+
+    da =
+      case opts[:transform_a] do
+        :none -> da
+        :transpose -> Nx.transpose(da)
+      end
+
+    da =
+      if opts[:lower] do
+        tril(da)
+      else
+        triu(da)
+      end
+
+    db =
+      case Nx.shape(x_input) do
+        {n} -> Nx.reshape(db, {n})
+        _ -> db
+      end
+
+    [{a_input, da}, {b, db}]
+  end
 
   defp grad(:quotient, _, _, _) do
     raise ArgumentError, """

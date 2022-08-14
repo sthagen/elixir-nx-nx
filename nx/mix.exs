@@ -6,7 +6,7 @@ defmodule Nx.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/elixir-nx/nx"
-  @version "0.3.0-dev"
+  @version "0.3.0"
 
   def project do
     [
@@ -38,7 +38,7 @@ defmodule Nx.MixProject do
 
   defp deps do
     [
-      {:complex, "~> 0.4.1"},
+      {:complex, "~> 0.4.2"},
       {:ex_doc, "~> 0.28.3", only: :docs}
     ]
   end

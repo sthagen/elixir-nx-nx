@@ -62,7 +62,7 @@ defmodule Nx.LinAlg do
         f32[2][2]
         [
           [4.4721360206604, 0.0],
-          [3.9354796409606934, 0.7155417203903198]
+          [3.9354796409606934, 0.7155413031578064]
         ]
       >
 
@@ -77,9 +77,9 @@ defmodule Nx.LinAlg do
         f32[4][4]
         [
           [2.4494898319244385, 0.0, 0.0, 0.0],
-          [1.2247447967529297, 2.1213204860687256, 0.0, 0.0],
-          [1.6329931020736694, 1.4142135381698608, 2.309401035308838, 0.0],
-          [3.265986204147339, -1.4142132997512817, 1.5877132415771484, 3.13249135017395]
+          [1.2247449159622192, 2.1213202476501465, 0.0, 0.0],
+          [1.632993221282959, 1.4142135381698608, 2.309401035308838, 0.0],
+          [3.265986442565918, -1.4142135381698608, 1.5877132415771484, 3.132491111755371]
         ]
       >
 
@@ -672,15 +672,15 @@ defmodule Nx.LinAlg do
   end
 
   @doc """
-  Calculates the QR decomposition of a 2-D tensor with shape `{M, N}`.
+  Calculates the QR decomposition of a tensor with shape `{..., M, N}`.
 
   ## Options
 
     * `:mode` - Can be one of `:reduced`, `:complete`. Defaults to `:reduced`
       For the following, `K = min(M, N)`
 
-      * `:reduced` - returns `q` and `r` with shapes `{M, K}` and `{K, N}`
-      * `:complete` - returns `q` and `r` with shapes `{M, M}` and `{M, N}`
+      * `:reduced` - returns `q` and `r` with shapes `{..., M, K}` and `{..., K, N}`
+      * `:complete` - returns `q` and `r` with shapes `{..., M, M}` and `{..., M, N}`
 
     * `:eps` - Rounding error threshold that can be applied during the triangularization
 
@@ -724,6 +724,40 @@ defmodule Nx.LinAlg do
           [3.0, 2.0, 1.0],
           [0.0, 1.0, 1.0],
           [0.0, 0.0, 1.0]
+        ]
+      >
+
+      iex> {qs, rs} = Nx.LinAlg.qr(Nx.tensor([[[-3, 2, 1], [0, 1, 1], [0, 0, -1]],[[3, 2, 1], [0, 1, 1], [0, 0, 1]]]))
+      iex> qs
+      #Nx.Tensor<
+        f32[2][3][3]
+        [
+          [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+          ],
+          [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0]
+          ]
+        ]
+      >
+      iex> rs
+      #Nx.Tensor<
+        f32[2][3][3]
+        [
+          [
+            [-3.0, 2.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, 0.0, -1.0]
+          ],
+          [
+            [3.0, 2.0, 1.0],
+            [0.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0]
+          ]
         ]
       >
 
@@ -774,8 +808,11 @@ defmodule Nx.LinAlg do
 
   ## Error cases
 
-      iex> Nx.LinAlg.qr(Nx.tensor([[1, 1, 1, 1], [-1, 4, 4, -1], [4, -2, 2, 0]]))
-      ** (ArgumentError) tensor must have at least as many rows as columns, got shape: {3, 4}
+      iex> Nx.LinAlg.qr(Nx.tensor([[[1, 1, 1, 1], [-1, 4, 4, -1], [4, -2, 2, 0]]]))
+      ** (ArgumentError) tensor must have at least as many rows as columns in the last two axes, got 3 rows and 4 columns
+
+      iex> Nx.LinAlg.qr(Nx.tensor([1, 2, 3, 4, 5]))
+      ** (ArgumentError) tensor must have at least rank 2, got rank 1 with shape {5}
   """
   def qr(tensor, opts \\ []) do
     opts = keyword!(opts, mode: :reduced, eps: @default_eps)
@@ -793,8 +830,18 @@ defmodule Nx.LinAlg do
     {q_shape, r_shape} = Nx.Shape.qr(shape, opts)
 
     impl!(tensor).qr(
-      {%{tensor | type: output_type, shape: q_shape, names: [nil, nil]},
-       %{tensor | type: output_type, shape: r_shape, names: [nil, nil]}},
+      {%{
+         tensor
+         | type: output_type,
+           shape: q_shape,
+           names: List.duplicate(nil, tuple_size(q_shape))
+       },
+       %{
+         tensor
+         | type: output_type,
+           shape: r_shape,
+           names: List.duplicate(nil, tuple_size(r_shape))
+       }},
       tensor,
       opts
     )
