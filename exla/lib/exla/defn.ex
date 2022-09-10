@@ -184,7 +184,8 @@ defmodule EXLA.Defn do
           state = %{
             precision: Keyword.get(options, :precision, :highest),
             builder: body_b,
-            params: Map.new(input_params ++ acc_params ++ constant_params)
+            params: Map.new(input_params ++ acc_params ++ constant_params),
+            scope_ids: collect_ids(expr)
           }
 
           {output, cache} = recur_flatten(output_expr, state, new_cache(token, used_hooks))
@@ -284,7 +285,8 @@ defmodule EXLA.Defn do
     state = %{
       precision: Keyword.get(options, :precision, :highest),
       builder: builder,
-      params: Map.new(params)
+      params: Map.new(params),
+      scope_ids: collect_ids(expr)
     }
 
     token = EXLA.Op.create_token(builder)
@@ -480,10 +482,10 @@ defmodule EXLA.Defn do
     {initial, cache} =
       recur_composite({get_token(cache), initial}, &cast_pred_to_u8/1, state, cache)
 
-    {pred, cache} = token_computation(:while_pred, arg, pred, {:pred, 8}, & &1, state, cache)
+    {pred, cache} = while_computation(:while_pred, arg, pred, {:pred, 8}, & &1, state, cache)
 
     {body, cache} =
-      token_computation(:while_body, arg, body, :with_token, &cast_pred_to_u8/1, state, cache)
+      while_computation(:while_body, arg, body, :with_token, &cast_pred_to_u8/1, state, cache)
 
     while = EXLA.Op.while(pred, body, initial)
     token = EXLA.Op.get_tuple_element(while, 0)
@@ -504,14 +506,20 @@ defmodule EXLA.Defn do
             clauses
             |> Enum.reverse()
             |> Enum.reduce(last, fn {pred, on_true}, on_false ->
-              put_in(t.data.args, [[{pred, on_true}], on_false])
+              update_in(t.data, fn data ->
+                %{data | args: [[{pred, on_true}], on_false], id: make_ref()}
+              end)
             end)
 
           to_if(pred, on_true, on_false, state, cache)
       end
 
-    token = EXLA.Op.get_tuple_element(cond, 0)
-    {EXLA.Op.get_tuple_element(cond, 1), update_token(cache, token)}
+    if get_token(cache) do
+      token = EXLA.Op.get_tuple_element(cond, 0)
+      {EXLA.Op.get_tuple_element(cond, 1), update_token(cache, token)}
+    else
+      {cond, cache}
+    end
   end
 
   defp cached_recur_operator(:parameter, %T{data: %Expr{args: [i]}}, state, cache) do
@@ -520,7 +528,7 @@ defmodule EXLA.Defn do
 
   defp cached_recur_operator(:fun, %T{data: %Expr{args: args}, type: type}, state, cache) do
     [args, expr, {_, name, _}] = args
-    {no_token_computation(name, args, expr, type, state), cache}
+    {fun_computation(name, args, expr, type, state), cache}
   end
 
   defp cached_recur_operator(:optional, %T{data: %Expr{args: [_, default]}}, state, cache) do
@@ -1319,11 +1327,11 @@ defmodule EXLA.Defn do
   defp new_cache(token, used),
     do: %{__MODULE__ => {token, used, %{}}}
 
-  defp reset_cache(%{__MODULE__ => {_, used, outfeed}}, token),
-    do: %{__MODULE__ => {token, used, outfeed}}
-
   defp update_outfeed(%{__MODULE__ => {token, used, _}} = cache, %{__MODULE__ => {_, _, outfeed}}),
     do: %{cache | __MODULE__ => {token, used, outfeed}}
+
+  defp reset_token(%{__MODULE__ => {_, used, outfeed}}, token),
+    do: %{__MODULE__ => {token, used, outfeed}}
 
   defp update_token(%{__MODULE__ => {_token, used, outfeed}} = cache, token),
     do: %{cache | __MODULE__ => {token, used, outfeed}}
@@ -1372,7 +1380,7 @@ defmodule EXLA.Defn do
     EXLA.Builder.build(apply(EXLA.Op, op, prepare_args.(args)))
   end
 
-  defp no_token_computation(name, args, expr, type, state) do
+  defp fun_computation(name, args, expr, type, state) do
     subbuilder = subbuilder(state.builder, Atom.to_string(name))
 
     arg_params =
@@ -1382,13 +1390,13 @@ defmodule EXLA.Defn do
       end)
 
     params = Enum.flat_map(arg_params, &computation_arg_param/1)
-    state = %{state | builder: subbuilder, params: Map.new(params)}
+    state = %{state | builder: subbuilder, params: Map.new(params), scope_ids: collect_ids(expr)}
 
     {res, _} = recur_composite(expr, state, no_token_cache())
     EXLA.Builder.build(to_type(res, type))
   end
 
-  defp token_computation(name, arg, expr, type, transform, state, cache) do
+  defp while_computation(name, arg, expr, type, transform, state, cache) do
     subbuilder = subbuilder(state.builder, Atom.to_string(name))
     arg_shape = computation_arg_shape(arg)
 
@@ -1398,8 +1406,8 @@ defmodule EXLA.Defn do
     arg_token = EXLA.Op.get_tuple_element(param, 0)
     arg_param = EXLA.Op.get_tuple_element(param, 1)
     params = computation_arg_param({arg, arg_param})
-    state = %{state | builder: subbuilder, params: Map.new(params)}
-    {res, comp_cache} = recur_composite(expr, transform, state, reset_cache(cache, arg_token))
+    state = %{state | builder: subbuilder, params: Map.new(params), scope_ids: collect_ids(expr)}
+    {res, comp_cache} = recur_composite(expr, transform, state, reset_token(cache, arg_token))
 
     res =
       if type == :with_token do
@@ -1524,32 +1532,34 @@ defmodule EXLA.Defn do
   ## Cond
 
   defp to_if(pred, on_true, on_false, state, cache) do
-    # Collect all predicate parameters, as those are evaluated
-    # outside of the conditional. All other graphs are evaluated
-    # only if necessary inside the conditional.
-    {_, pred_ids} = collect_ids(pred, %{})
-
     {pred_op, cache} = recur_operator(pred, state, cache)
     pred_op = to_type(pred_op, {:pred, 8})
 
-    {true_args, true_comp, cache} = to_if_branch(true, on_true, pred_ids, state, cache)
-    {false_args, false_comp, cache} = to_if_branch(false, on_false, pred_ids, state, cache)
+    {true_args, true_comp, cache} = to_if_branch(true, on_true, state, cache)
+    {false_args, false_comp, cache} = to_if_branch(false, on_false, state, cache)
     {EXLA.Op.conditional(pred_op, true_args, true_comp, false_args, false_comp), cache}
   end
 
-  defp collect_ids(%T{data: %Expr{id: id}} = t, ids) do
-    case ids do
-      %{^id => true} -> {t, ids}
-      %{} -> Tree.apply_args(t, Map.put(ids, id, true), &collect_ids/2)
-    end
-  end
+  defp collect_arg?(_id, :parameter, _args, _pred_ids),
+    do: true
 
-  defp collect_args(%T{data: %Expr{id: id, op: op}} = expr, {cache, ids}, pred_ids) do
+  # We never pass reference to tuples around, only through their elements,
+  # so if a tuple is in a predicate, then it all must be in a predicate.
+  defp collect_arg?(_id, :elem, [%T{data: %Expr{id: tuple_id}}, _pos], pred_ids)
+       when is_map_key(pred_ids, tuple_id),
+       do: true
+
+  defp collect_arg?(id, _op, _args, pred_ids) when is_map_key(pred_ids, id),
+    do: true
+
+  defp collect_arg?(_id, _op, _args, _pred_ids), do: false
+
+  defp collect_args(%T{data: %Expr{id: id, op: op, args: args}} = expr, {cache, ids}, pred_ids) do
     cond do
       op == :constant ->
         {expr, {cache, ids}}
 
-      Map.has_key?(pred_ids, id) or op == :parameter ->
+      collect_arg?(id, op, args, pred_ids) ->
         case ids do
           %{^id => {_, _, new}} ->
             {new, {cache, ids}}
@@ -1572,7 +1582,7 @@ defmodule EXLA.Defn do
     end
   end
 
-  defp to_if_branch(bool, expr, ids, state, cache) do
+  defp to_if_branch(bool, expr, %{scope_ids: ids} = state, cache) do
     {expr, {_, ids_args}} = Composite.traverse(expr, {%{}, %{}}, &collect_args(&1, &2, ids))
     sorted_ids_args = Enum.sort_by(ids_args, fn {_id, {i, _old, _new}} -> i end)
 
@@ -1583,27 +1593,42 @@ defmodule EXLA.Defn do
 
     subbuilder = subbuilder(state.builder, "if-#{Atom.to_string(bool)}")
 
-    shapes =
-      for {_, {_, _, %{type: type, shape: shape}}} <- sorted_ids_args do
-        EXLA.Shape.make_shape(type, shape)
-      end
+    {args, comp, comp_cache} =
+      if_branch_computation(subbuilder, args, cache, fn params, comp_cache ->
+        comp_state = %{
+          state
+          | builder: subbuilder,
+            params: Map.new(params),
+            scope_ids: collect_ids(expr)
+        }
 
-    tuple_shape = EXLA.Shape.make_tuple_shape([EXLA.Shape.make_token_shape() | shapes])
-    param = EXLA.Op.parameter(subbuilder, 0, tuple_shape, "p")
+        recur_composite(expr, &cast_pred_to_u8/1, comp_state, comp_cache)
+      end)
 
-    params =
-      for {_, {i, _, _}} <- sorted_ids_args do
-        {i, EXLA.Op.get_tuple_element(param, i + 1)}
-      end
-
-    comp_token = EXLA.Op.get_tuple_element(param, 0)
-    comp_state = %{state | builder: subbuilder, params: Map.new(params)}
-    comp_cache = reset_cache(cache, comp_token)
-    {res, comp_cache} = recur_composite(expr, &cast_pred_to_u8/1, comp_state, comp_cache)
-
-    args = EXLA.Op.tuple(state.builder, [get_token(cache) | args])
-    comp = EXLA.Builder.build(EXLA.Op.tuple(subbuilder, [get_token(comp_cache), res]))
+    args = EXLA.Op.tuple(state.builder, args)
     {args, comp, update_outfeed(cache, comp_cache)}
+  end
+
+  defp if_branch_computation(subbuilder, args, cache, fun) do
+    shapes = Enum.map(args, &EXLA.Op.get_shape/1)
+
+    if token = get_token(cache) do
+      tuple_shape = EXLA.Shape.make_tuple_shape([EXLA.Shape.make_token_shape() | shapes])
+      param = EXLA.Op.parameter(subbuilder, 0, tuple_shape, "p")
+      params = Enum.with_index(args, fn _, i -> {i, EXLA.Op.get_tuple_element(param, i + 1)} end)
+
+      comp_token = EXLA.Op.get_tuple_element(param, 0)
+      comp_cache = reset_token(cache, comp_token)
+      {res, comp_cache} = fun.(params, comp_cache)
+      comp = EXLA.Builder.build(EXLA.Op.tuple(subbuilder, [get_token(comp_cache), res]))
+      {[token | args], comp, comp_cache}
+    else
+      tuple_shape = EXLA.Shape.make_tuple_shape(shapes)
+      param = EXLA.Op.parameter(subbuilder, 0, tuple_shape, "p")
+      params = Enum.with_index(args, fn _, i -> {i, EXLA.Op.get_tuple_element(param, i)} end)
+      {res, comp_cache} = fun.(params, cache)
+      {args, EXLA.Builder.build(res), comp_cache}
+    end
   end
 
   ## Axes helpers
@@ -1672,6 +1697,28 @@ defmodule EXLA.Defn do
   end
 
   # Helpers
+
+  defp collect_ids(expr) do
+    Composite.reduce(expr, %{}, &(collect_ids(&1, &2) |> elem(1)))
+  end
+
+  defp collect_ids(%T{data: %Expr{id: id} = expr} = t, ids) do
+    case ids do
+      %{^id => true} ->
+        {t, ids}
+
+      %{} ->
+        ids = Map.put(ids, id, true)
+
+        # Do not collect ids when a new lexical construct starts
+        case expr do
+          %{op: :cond, args: [[{pred, _expr} | _], _last]} -> collect_ids(pred, ids)
+          %{op: :while, args: [initial | _]} -> Composite.traverse(initial, ids, &collect_ids/2)
+          %{op: op} when op in [:cond, :fun] -> {t, ids}
+          %{} -> Tree.apply_args(t, ids, &collect_ids/2)
+        end
+    end
+  end
 
   defp filter_inputs(args, inputs), do: filter_inputs(args, 0, inputs)
 

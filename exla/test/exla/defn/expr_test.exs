@@ -1196,6 +1196,16 @@ defmodule EXLA.Defn.ExprTest do
       assert_equal(if_tuple_match(Nx.tensor(1), Nx.tensor(10), Nx.tensor(20)), Nx.tensor(-10))
     end
 
+    defn if_tuple_match_twice(a, b) do
+      {a, b} = if(a, do: {a, b}, else: {a, b})
+      {a, b} = if(a, do: {a, b}, else: {a, b})
+      a + b
+    end
+
+    test "with matched tuples twice" do
+      assert_equal(if_tuple_match_twice(Nx.tensor(1), Nx.tensor(1)), Nx.tensor(2))
+    end
+
     defn if_tuple_return(a, b, c) do
       {xy, _} = if(a, do: {{a, b}, c}, else: {{c, b}, a})
       xy
@@ -1421,6 +1431,16 @@ defmodule EXLA.Defn.ExprTest do
           ],
           type: {:f, 64}
         )
+      )
+    end
+
+    defn map_conditional(t), do: Nx.map(t, fn x -> if x > 0, do: x, else: -x end)
+
+    @tag :unsupported_64_bit_op
+    test "maps a function with conditional" do
+      assert_equal(
+        map_conditional(Nx.tensor([-2, -1, 0, 1, 2])),
+        Nx.tensor([2, 1, 0, 1, 2])
       )
     end
   end
