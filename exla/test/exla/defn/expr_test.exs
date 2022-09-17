@@ -4,11 +4,6 @@ defmodule EXLA.Defn.ExprTest do
   import Nx, only: :sigils
   import Nx.Defn
 
-  setup do
-    Nx.Defn.default_options(compiler: EXLA)
-    :ok
-  end
-
   defp evaluate(fun, args) do
     fun |> Nx.Defn.jit(compiler: Nx.Defn.Evaluator) |> apply(args)
   end
@@ -1436,6 +1431,8 @@ defmodule EXLA.Defn.ExprTest do
 
     defn map_conditional(t), do: Nx.map(t, fn x -> if x > 0, do: x, else: -x end)
 
+    # GPUs do not allow a conditional inside a map
+    @tag platform: :host
     @tag :unsupported_64_bit_op
     test "maps a function with conditional" do
       assert_equal(
