@@ -2,7 +2,7 @@ defmodule Nx.DefnTest do
   use ExUnit.Case, async: true
 
   alias Nx.Tensor, as: T
-  alias Nx.Defn.{Expr, Identity, Evaluator}
+  alias Nx.Defn.{Expr, Debug, Evaluator}
   alias Nx.DefnTest.Sample
   import Nx.Defn
 
@@ -12,7 +12,7 @@ defmodule Nx.DefnTest do
   end
 
   setup context do
-    Nx.Defn.default_options(compiler: context[:compiler] || Identity)
+    Nx.Defn.default_options(compiler: context[:compiler] || Debug)
     :ok
   end
 
@@ -194,16 +194,6 @@ defmodule Nx.DefnTest do
       for {k, v} <- map do
         assert v.shape == {String.to_integer(k)}
       end
-    end
-  end
-
-  describe "arguments" do
-    defn identity(t), do: t
-
-    test "raises on Nx.Defn.Expr as argument" do
-      message = ~r/cannot pass a tensor expression as argument to defn/
-      assert_raise ArgumentError, message, fn -> identity(Nx.Defn.Expr.tensor(1)) end
-      assert_raise ArgumentError, message, fn -> identity({Nx.Defn.Expr.tensor(1)}) end
     end
   end
 
@@ -1444,6 +1434,306 @@ defmodule Nx.DefnTest do
                |> String.trim()
     end
 
+    defn while_last(t) do
+      {_, last, _} =
+        while {i = 0, _last = 0, t}, i <= t do
+          {i + 1, i, t}
+        end
+
+      last
+    end
+
+    @tag compiler: Evaluator
+    test "underscored vars" do
+      assert while_last(10) == Nx.tensor(10)
+    end
+
+    defn while_generator_sum(tensor) do
+      while acc = tensor[0] * 0, part <- tensor do
+        acc + part
+      end
+    end
+
+    @tag compiler: Evaluator
+    test "tensor generator" do
+      assert while_generator_sum(Nx.tensor([0, 1, 2, 3, 4])) == Nx.tensor(10)
+      assert while_generator_sum(Nx.iota({3, 3})) == Nx.tensor([9, 12, 15])
+    end
+
+    defn while_generator_sum_unroll(tensor) do
+      while acc = 0, part <- tensor, unroll: true do
+        acc + part
+      end
+    end
+
+    test "tensor generator unrolled" do
+      assert while_generator_sum_unroll(Nx.tensor([1, 2, 3])) |> inspect() == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0                s64[3]
+               b = slice a, [0], [1], [1]   s64[1]
+               c = squeeze b, [0]           s64
+               d = slice a, [1], [1], [1]   s64[1]
+               e = squeeze d, [0]           s64
+               f = add c, e                 s64
+               g = slice a, [2], [1], [1]   s64[1]
+               h = squeeze g, [0]           s64
+               i = add f, h                 s64
+             >\
+             """
+    end
+
+    defn while_generator_sum_unroll_int(tensor) do
+      while acc = 0, part <- tensor, unroll: 3 do
+        acc + part
+      end
+    end
+
+    @tag compiler: Evaluator
+    test "tensor generator unrolled integer result" do
+      assert while_generator_sum_unroll_int(Nx.tensor([1, 2, 3])) == Nx.tensor(6)
+      assert while_generator_sum_unroll_int(Nx.tensor([1, 2, 3, 4, 5, 6])) == Nx.tensor(21)
+      assert while_generator_sum_unroll_int(Nx.tensor([1, 2, 3, 4, 5, 6, 7, 8])) == Nx.tensor(36)
+    end
+
+    test "tensor generator unrolled integer expression exact" do
+      expr = while_generator_sum_unroll_int(Nx.tensor([1, 2, 3, 4, 5, 6]))
+
+      assert inspect(expr) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0         s64[6]
+               b = while {0, a, 0}   tuple3
+               c = elem b, 2         s64
+             >\
+             """
+
+      %T{
+        data: %Expr{
+          op: :elem,
+          args: [%T{data: %Expr{op: :while, args: [_, _, _, while_body]}}, 2]
+        }
+      } = expr
+
+      {counter, param, body} = while_body
+
+      assert inspect(counter) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0   s64
+               b = add 3, a    s64
+             >\
+             """
+
+      assert inspect(param) == """
+             #Nx.Tensor<
+               s64[6]
+             \s\s
+               Nx.Defn.Expr
+               parameter a:1   s64[6]
+             >\
+             """
+
+      assert inspect(body) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:2                s64
+               parameter b:1                s64[6]
+               parameter c:0                s64
+               d = slice b, [c], [1], [1]   s64[1]
+               e = squeeze d, [0]           s64
+               f = add a, e                 s64
+               g = add 1, c                 s64
+               h = slice b, [g], [1], [1]   s64[1]
+               i = squeeze h, [0]           s64
+               j = add f, i                 s64
+               k = add 2, c                 s64
+               l = slice b, [k], [1], [1]   s64[1]
+               m = squeeze l, [0]           s64
+               n = add j, m                 s64
+             >\
+             """
+    end
+
+    test "tensor generator unrolled integer expression left-over" do
+      assert while_generator_sum_unroll_int(Nx.tensor([1, 2, 3])) |> inspect() == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0                s64[3]
+               b = slice a, [0], [1], [1]   s64[1]
+               c = squeeze b, [0]           s64
+               d = slice a, [1], [1], [1]   s64[1]
+               e = squeeze d, [0]           s64
+               f = add c, e                 s64
+               g = slice a, [2], [1], [1]   s64[1]
+               h = squeeze g, [0]           s64
+               i = add f, h                 s64
+             >\
+             """
+
+      assert while_generator_sum_unroll_int(Nx.tensor([1, 2, 3, 4, 5, 6, 7, 8])) |> inspect() ==
+               """
+               #Nx.Tensor<
+                 s64
+               \s\s
+                 Nx.Defn.Expr
+                 parameter a:0                s64[8]
+                 b = while {0, a, 0}          tuple3
+                 c = elem b, 2                s64
+                 d = slice a, [6], [1], [1]   s64[1]
+                 e = squeeze d, [0]           s64
+                 f = add c, e                 s64
+                 g = slice a, [7], [1], [1]   s64[1]
+                 h = squeeze g, [0]           s64
+                 i = add f, h                 s64
+               >\
+               """
+    end
+
+    defn while_generator_range(acc, opts \\ []) do
+      opts = keyword!(opts, [:range, unroll: false])
+
+      while acc, part <- opts[:range], unroll: opts[:unroll] do
+        acc + part
+      end
+    end
+
+    @tag compiler: Evaluator
+    test "range generator" do
+      # Increasing ranges
+      assert while_generator_range(0, range: 0..4) == Nx.tensor(10)
+      assert while_generator_range(100, range: 1..10) == Nx.tensor(155)
+      assert while_generator_range(0, range: 0..4, unroll: true) == Nx.tensor(10)
+      assert while_generator_range(100, range: 1..10, unroll: true) == Nx.tensor(155)
+      assert while_generator_range(0, range: 0..4, unroll: 3) == Nx.tensor(10)
+      assert while_generator_range(100, range: 1..10, unroll: 3) == Nx.tensor(155)
+
+      # Empty ranges
+      assert while_generator_range(0, range: 0..-1//1) == Nx.tensor(0)
+      assert while_generator_range(100, range: 0..-1//1) == Nx.tensor(100)
+      assert while_generator_range(0, range: 0..-1//1, unroll: true) == Nx.tensor(0)
+      assert while_generator_range(100, range: 0..-1//1, unroll: true) == Nx.tensor(100)
+      assert while_generator_range(0, range: 0..-1//1, unroll: 3) == Nx.tensor(0)
+      assert while_generator_range(100, range: 0..-1//1, unroll: 3) == Nx.tensor(100)
+
+      # Decreasing ranges
+      assert while_generator_range(0, range: 4..0//-1) == Nx.tensor(10)
+      assert while_generator_range(100, range: 10..1//-1) == Nx.tensor(155)
+      assert while_generator_range(0, range: 4..0//-1, unroll: true) == Nx.tensor(10)
+      assert while_generator_range(100, range: 10..1//-1, unroll: true) == Nx.tensor(155)
+      assert while_generator_range(0, range: 4..0//-1, unroll: 3) == Nx.tensor(10)
+      assert while_generator_range(100, range: 10..1//-1, unroll: 3) == Nx.tensor(155)
+    end
+
+    test "range generator unrolled" do
+      assert while_generator_range(0, range: 1..3, unroll: true) |> inspect() == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0   s64
+               b = add 6, a    s64
+             >\
+             """
+    end
+
+    test "range generator unrolled integer expression exact" do
+      expr = while_generator_range(0, range: 1..6, unroll: 3)
+
+      assert inspect(expr) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0      s64
+               b = while {1, a}   tuple2
+               c = elem b, 1      s64
+             >\
+             """
+
+      %T{
+        data: %Expr{
+          op: :elem,
+          args: [%T{data: %Expr{op: :while, args: [_, _, _, while_body]}}, 1]
+        }
+      } = expr
+
+      {counter, body} = while_body
+
+      assert inspect(counter) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0   s64
+               b = add 3, a    s64
+             >\
+             """
+
+      assert inspect(body) == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0   s64
+               parameter b:1   s64
+               c = add b, a    s64
+               d = add c, a    s64
+               e = add a, d    s64
+               f = add 1, e    s64
+               g = add 2, f    s64
+             >\
+             """
+    end
+
+    test "range generator unrolled integer expression left-over" do
+      assert while_generator_range(0, range: 1..3, unroll: 3) |> inspect() == """
+             #Nx.Tensor<
+               s64
+             \s\s
+               Nx.Defn.Expr
+               parameter a:0   s64
+               b = add 6, a    s64
+             >\
+             """
+
+      assert while_generator_range(0, range: 1..8, unroll: 3) |> inspect() ==
+               """
+               #Nx.Tensor<
+                 s64
+               \s\s
+                 Nx.Defn.Expr
+                 parameter a:0      s64
+                 b = while {1, a}   tuple2
+                 c = elem b, 1      s64
+                 d = add 15, c      s64
+               >\
+               """
+
+      assert while_generator_range(0, range: 8..1//-1, unroll: 3) |> inspect() ==
+               """
+               #Nx.Tensor<
+                 s64
+               \s\s
+                 Nx.Defn.Expr
+                 parameter a:0      s64
+                 b = while {8, a}   tuple2
+                 c = elem b, 1      s64
+                 d = add 3, c       s64
+               >\
+               """
+    end
+
     defn while_mixed_return(a, b) do
       while {a, b}, Nx.less(a, 10) do
         %{a: a, b: b}
@@ -1468,6 +1758,18 @@ defmodule Nx.DefnTest do
                    fn -> while_mixed_context(Nx.tensor(0), Nx.tensor(1)) end
     end
 
+    defn while_condition_opts(a) do
+      while a, Nx.less(a, 10), unroll: true do
+        a + 1
+      end
+    end
+
+    test "raises on options given to condition" do
+      assert_raise CompileError,
+                   ~r"options are not supported on while with conditions, only with generators, got: \[unroll: true\]",
+                   fn -> while_condition_opts(Nx.tensor(0)) end
+    end
+
     test "raises if non-variable is given as pattern" do
       assert_raise ArgumentError,
                    ~r"invalid initial argument for \"while\". Expected a variable, a variable assignment, or a tuple of the same",
@@ -1484,7 +1786,7 @@ defmodule Nx.DefnTest do
 
     test "raises if non-block is given" do
       assert_raise ArgumentError,
-                   ~r"expected third argument to \"while\" to be a do-block, got: a \+ 1",
+                   ~r"expected last argument of \"while\" to be a do-block, got: a \+ 1",
                    fn ->
                      defmodule InvalidWhile do
                        defn upto(a) do
@@ -1556,12 +1858,32 @@ defmodule Nx.DefnTest do
     end
   end
 
+  describe "debug expression" do
+    defn defn_debug(a, b), do: a + b
+
+    test "debug_expr/2" do
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :add, args: [left, right]}} =
+               Nx.Defn.debug_expr(&defn_debug/2).(1, 2)
+
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :parameter, args: [0]}} = left
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :parameter, args: [1]}} = right
+    end
+
+    test "debug_expr_apply/3" do
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :add, args: [left, right]}} =
+               Nx.Defn.debug_expr_apply(&defn_debug/2, [1, 2])
+
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :parameter, args: [0]}} = left
+      assert %Nx.Tensor{data: %Nx.Defn.Expr{op: :parameter, args: [1]}} = right
+    end
+  end
+
   describe "jit" do
     defn defn_jit({a, b}, c), do: a + b - c
 
     test "compiles defn function" do
       assert %T{data: %Expr{op: :subtract}} =
-               Nx.Defn.jit(&defn_jit/2, compiler: Identity).({1, 2}, 3)
+               Nx.Defn.jit(&defn_jit/2, compiler: Debug).({1, 2}, 3)
 
       Nx.Defn.default_options(compiler: Evaluator)
       assert Nx.Defn.jit(&defn_jit/2).({4, 5}, 3) == Nx.tensor(6)
@@ -1575,7 +1897,7 @@ defmodule Nx.DefnTest do
     test "jits or applies" do
       assert %T{data: %Expr{op: :subtract}} =
                Nx.Defn.jit_apply(&defn_jit_or_apply/2, [{1, 2}, 3],
-                 compiler: Identity,
+                 compiler: Debug,
                  on_conflict: :reuse
                )
 
@@ -1585,13 +1907,13 @@ defmodule Nx.DefnTest do
     end
 
     def elixir_jit({a, b}, c) do
-      true = Process.get(Nx.Defn.Compiler) in [Evaluator, Identity]
+      true = Process.get(Nx.Defn.Compiler) in [Evaluator, Debug]
       a |> Nx.add(b) |> Nx.subtract(c)
     end
 
     test "compiles elixir function" do
       assert %T{data: %Expr{op: :subtract}} =
-               Nx.Defn.jit(&elixir_jit/2, compiler: Identity).({4, 5}, 3)
+               Nx.Defn.jit(&elixir_jit/2, compiler: Debug).({4, 5}, 3)
 
       Nx.Defn.default_options(compiler: Evaluator)
       assert Nx.Defn.jit(&elixir_jit/2).({4, 5}, 3) == Nx.tensor(6)
@@ -1772,20 +2094,20 @@ defmodule Nx.DefnTest do
 
     test "have their own cache key" do
       sum_axis_expr(Nx.tensor([[1, 2], [3, 4]]), axes: [0])
-      key0 = Process.get(Identity)
+      key0 = Process.get(Debug)
       assert is_function(key0, 1)
 
       sum_axis_expr(Nx.tensor([[1, 2], [3, 4]]), axes: [1])
-      key1 = Process.get(Identity)
+      key1 = Process.get(Debug)
       assert is_function(key1, 1)
 
       sum_axis_expr(Nx.tensor([[1, 2], [3, 4]]), axes: [0])
-      assert Process.get(Identity) == key0
+      assert Process.get(Debug) == key0
     end
   end
 
   describe "private definitions" do
-    defnp(private(a, b), do: a + b)
+    defnp private(a, b), do: a + b
     defn calls_private(a, b), do: private(a, b)
 
     @tag compiler: Evaluator
@@ -1801,6 +2123,15 @@ defmodule Nx.DefnTest do
     @tag compiler: Evaluator
     test "are callable from defn" do
       assert calls_private(1, 2) == Nx.tensor(3)
+    end
+
+    test "warns when unused" do
+      assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
+               defmodule Example do
+                 import Nx.Defn
+                 defnp add(a, b), do: a + b
+               end
+             end) =~ "function add/2 is unused"
     end
   end
 

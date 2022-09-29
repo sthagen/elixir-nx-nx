@@ -3,6 +3,7 @@ defmodule EXLA.Defn.APITest do
 
   import Nx.Defn
   import ExUnit.CaptureLog
+  import ExUnit.CaptureIO
 
   describe "options" do
     defn add_two(a, b), do: a + b
@@ -239,10 +240,42 @@ defmodule EXLA.Defn.APITest do
 
       assert_equal(Nx.Stream.done(stream), %Container{a: Nx.tensor(0), b: Nx.tensor(3), d: :acc})
     end
+
+    defn lazy_container_stream(%LazyWrapped{a: a, c: c}, acc) do
+      {acc, acc + a - c}
+    end
+
+    test "lazy container in" do
+      args = [%LazyOnly{a: 0, b: 0, c: 0}, 0]
+      %_{} = stream = EXLA.stream(&lazy_container_stream/2, args)
+
+      assert Nx.Stream.send(stream, %LazyOnly{a: 3, b: 0, c: -1}) == :ok
+      assert_equal(Nx.Stream.recv(stream), Nx.tensor(0))
+
+      assert Nx.Stream.send(stream, %LazyOnly{a: 5, b: 0, c: 2}) == :ok
+      assert_equal(Nx.Stream.recv(stream), Nx.tensor(4))
+
+      assert_equal(Nx.Stream.done(stream), Nx.tensor(7))
+    end
   end
 
   describe "hooks" do
     require Logger
+
+    defn print_add(a, b) do
+      print_value(a + b)
+    end
+
+    test "prints value" do
+      assert capture_io(fn ->
+               assert_equal(print_add(Nx.tensor(1), Nx.tensor(2)), Nx.tensor(3))
+             end) =~ """
+             #Nx.Tensor<
+               s64
+               3
+             >\
+             """
+    end
 
     defp send_to_self(tag) do
       parent = self()

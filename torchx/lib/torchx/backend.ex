@@ -199,7 +199,13 @@ defmodule Torchx.Backend do
 
   @impl true
   def to_binary(tensor, limit) do
-    Torchx.to_blob(from_nx(tensor), limit)
+    blob = Torchx.to_blob(from_nx(tensor), limit)
+
+    case tensor.type do
+      {:u, 16} -> for <<x::32-native <- blob>>, do: <<x::16-native>>, into: <<>>
+      {:u, 32} -> for <<x::64-native <- blob>>, do: <<x::32-native>>, into: <<>>
+      _ -> blob
+    end
   end
 
   @impl true
@@ -256,7 +262,7 @@ defmodule Torchx.Backend do
 
   @impl true
   def as_type(%T{type: type} = out, %T{} = t),
-    do: Torchx.to_type(from_nx(t), to_torch_type(type)) |> to_nx(out)
+    do: from_nx(t) |> Torchx.to_type(to_torch_type(type)) |> bitmask(type) |> to_nx(out)
 
   @impl true
   def squeeze(out, %T{} = t, axes) do
@@ -808,20 +814,104 @@ defmodule Torchx.Backend do
     raise ArithmeticError, "Torchx does not support complex values for atan2"
   end
 
-  binary_ops =
-    [:add, :subtract, :multiply, :power, :remainder, :divide, :min, :max, :quotient] ++
-      [:left_shift, :right_shift, :atan2] ++
-      [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal] ++
-      [:logical_and, :logical_or, :logical_xor]
+  ops = [:add, :subtract, :multiply, :power, :left_shift]
 
-  for op <- binary_ops do
+  for op <- ops do
     @impl true
     def unquote(op)(out, l, r) do
       {left, right} = maybe_upcast(l, r)
+      {left_tx, right_tx} = maybe_broadcast_bin_args(out.shape, left, right)
+      result = Torchx.unquote(op)(left_tx, right_tx)
 
+      result
+      |> bitmask(out.type)
+      |> Torchx.to_type(to_torch_type(out.type))
+      |> to_nx(out)
+    end
+  end
+
+  defp bitmask({device, _} = tensor, {:u, 16}),
+    do: Torchx.bitwise_and(tensor, Torchx.scalar_tensor(0xFFFF, :int, device))
+
+  defp bitmask({device, _} = tensor, {:u, 32}),
+    do: Torchx.bitwise_and(tensor, Torchx.scalar_tensor(0xFFFF_FFFF, :long, device))
+
+  defp bitmask(tensor, {_, _}),
+    do: tensor
+
+  ops =
+    [:min, :max, :divide, :quotient, :atan2] ++
+      [:right_shift, :logical_and, :logical_or, :logical_xor] ++
+      [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal]
+
+  for op <- ops do
+    @impl true
+    def unquote(op)(out, l, r) do
+      {left, right} = maybe_upcast(l, r)
       {left_tx, right_tx} = maybe_broadcast_bin_args(out.shape, left, right)
 
       Torchx.unquote(op)(left_tx, right_tx)
+      |> Torchx.to_type(to_torch_type(out.type))
+      |> to_nx(out)
+    end
+  end
+
+  @impl true
+  def remainder(out, l, r) do
+    {left, right} = maybe_upcast(l, r)
+    {left_tx, right_tx} = maybe_broadcast_bin_args(out.shape, left, right)
+
+    {device, _} = left_tx
+
+    if l.type == {:u, 64} do
+      # We emulate u64 numbers with s64.
+
+      # Numbers smaller than max_s64 are kept as positive s64 and fmod
+      # works fine for those.
+
+      remainder_from_positive = Torchx.fmod(left_tx, right_tx)
+
+      # Numbers bigger than max_s64 are kept as negative s64. Consider
+      # such s64 number denoted as x. We can decompose x into two
+      # positive s64 numbers:
+      #
+      #   x = max_s64 + rest
+      #
+      # We can obtain rest as follows:
+      #
+      #   rest = x - max_s64
+      #
+      # We also know that the following holds:
+      #
+      #   x mod y = ((max_s64 mod y) + (rest mod y)) mod y
+      #
+      # We can safely compute operations on the right hand side using
+      # s64 numbers.
+
+      max_s64_tx =
+        Nx.Constants.max_finite(:s64, backend: {Nx.BinaryBackend, device: device}) |> from_nx()
+
+      rest_tx = Torchx.subtract(left_tx, max_s64_tx)
+
+      remainder_from_negative =
+        Torchx.fmod(
+          Torchx.add(
+            Torchx.fmod(rest_tx, right_tx),
+            Torchx.fmod(max_s64_tx, right_tx)
+          ),
+          right_tx
+        )
+
+      zero = Torchx.scalar_tensor(0, to_torch_type(l.type), device)
+
+      left_tx
+      |> Torchx.less(zero)
+      |> Torchx.where(remainder_from_negative, remainder_from_positive)
+      |> Torchx.to_type(to_torch_type(out.type))
+      |> to_nx(out)
+    else
+      left_tx
+      |> Torchx.fmod(right_tx)
       |> Torchx.to_type(to_torch_type(out.type))
       |> to_nx(out)
     end
@@ -882,6 +972,16 @@ defmodule Torchx.Backend do
   @impl true
   def log1p(%{type: {:c, _}}, _t) do
     raise ArithmeticError, "Torchx does not support complex values for log1p"
+  end
+
+  @impl true
+  def erf_inv(out, %{type: {:f, 16}} = tensor) do
+    tensor
+    |> from_nx()
+    |> Torchx.to_type(:float)
+    |> Torchx.erf_inv()
+    |> Torchx.to_type(:half)
+    |> to_nx(out)
   end
 
   unary_ops =
@@ -1637,11 +1737,35 @@ defmodule Torchx.Backend do
   end
 
   @impl true
+  # u64 is emulated with s64
+  def bitcast(%{type: {:s, 64}} = out, %T{type: {:u, 64}, data: data}) do
+    %{out | data: data}
+  end
+
+  def bitcast(%{type: {:u, 64}} = out, %T{type: {:s, 64}, data: data}) do
+    %{out | data: data}
+  end
+
+  # u16/u32 are double the size of s16/u32
+  def bitcast(%{type: {:u, bit}} = out, %T{type: {:s, bit}, data: %TB{ref: {device, _}}} = tensor)
+      when bit in [16, 32] do
+    output_size = 2 * bit
+
+    blob =
+      for <<x::size(bit)-signed-native <- to_binary(tensor, Nx.size(tensor))>>,
+        into: <<>>,
+        do: <<x::size(output_size)-signed-native>>
+
+    blob
+    |> Torchx.from_blob(out.shape, to_torch_type(out.type), device)
+    |> to_nx(out)
+  end
+
+  # s16/s32 are half the size of s16/u32 but that's handled in to_binary
   def bitcast(out, %T{data: %TB{ref: {device, _}}} = tensor) do
     tensor
-    |> from_nx()
-    |> Torchx.to_blob()
-    |> Torchx.from_blob(out.shape, to_torch_type(out.type), device_option(device: device))
+    |> to_binary(Nx.size(tensor))
+    |> Torchx.from_blob(out.shape, to_torch_type(out.type), device)
     |> to_nx(out)
   end
 
@@ -1649,18 +1773,9 @@ defmodule Torchx.Backend do
   def inspect(%T{} = tensor, inspect_opts) do
     limit = if inspect_opts.limit == :infinity, do: :infinity, else: inspect_opts.limit + 1
 
-    type =
-      case tensor.type do
-        {:u, 8} -> {:u, 8}
-        {:u, 16} -> {:s, 32}
-        {:u, 32} -> {:s, 64}
-        {:u, 64} -> {:s, 64}
-        t -> t
-      end
-
     tensor
     |> to_binary(min(limit, Nx.size(tensor)))
-    |> then(&Nx.Backend.inspect(%{tensor | type: type}, &1, inspect_opts))
+    |> then(&Nx.Backend.inspect(tensor, &1, inspect_opts))
     |> maybe_add_signature(tensor)
   end
 
@@ -1731,11 +1846,6 @@ defmodule Torchx.Backend do
   defp to_torch_type({:f, 64}, _), do: :double
   defp to_torch_type({:c, 64}, _), do: :complex
   defp to_torch_type({:c, 128}, _), do: :complex_double
-
-  defp to_torch_type({:u, size}, hint) when size in [16, 32, 64] do
-    raise ArgumentError,
-          String.trim("Torchx does not support unsigned #{size} bit integer#{hint}")
-  end
 
   if Application.compile_env(:torchx, :check_shape_and_type, false) do
     defp check_shape_and_type!(device_ref, shape, type) do

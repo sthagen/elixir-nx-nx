@@ -118,9 +118,9 @@ private:
   }                                                                 \
   else if (enif_get_double(env, argv[ARGN], &double_##VAR) == 0)    \
   {                                                                 \
-    long long long_##VAR;                                           \
-    enif_get_int64(env, argv[ARGN], (ErlNifSInt64 *)&long_##VAR);   \
-    new (&VAR) torch::Scalar((int64_t)long_##VAR);                  \
+    int64_t int64_##VAR;                                           \
+    enif_get_int64(env, argv[ARGN], (ErlNifSInt64 *)&int64_##VAR);   \
+    new (&VAR) torch::Scalar(int64_##VAR);                  \
   }                                                                 \
   else                                                              \
   {                                                                 \
@@ -162,7 +162,7 @@ private:
     if (c10::isFloatingType(S.type()))                       \
       return nx::nif::ok(env, nx::nif::make(env, S.toDouble())); \
     else                                                     \
-      return nx::nif::ok(env, nx::nif::make(env, (long)S.toLong())); \
+      return nx::nif::ok(env, nx::nif::make(env, (int64_t) S.toLong())); \
   }                                                          \
   CATCH()
 
@@ -235,7 +235,7 @@ NIF(delete_tensor)
   return tensor.deallocate() ? nx::nif::ok(env) : enif_make_badarg(env);
 }
 
-unsigned long elem_count(std::vector<int64_t> shape)
+uint64_t elem_count(std::vector<int64_t> shape)
 {
   return std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>{});
 }
@@ -324,8 +324,8 @@ NIF(shape)
   TENSOR_PARAM(0, t);
 
   std::vector<ERL_NIF_TERM> sizes;
-  for (int dim = 0; dim < t->dim(); dim++ )
-    sizes.push_back(nx::nif::make(env, ((long)t->size(dim))));
+  for (int64_t dim = 0; dim < t->dim(); dim++ )
+    sizes.push_back(nx::nif::make(env, (t->size(dim))));
 
   return nx::nif::ok(env, enif_make_tuple_from_array(env, sizes.data(), sizes.size()));
 }
@@ -666,6 +666,13 @@ BINARY_OP(atan2)
 BINARY_OP(min)
 BINARY_OP(max)
 
+NIF(fmod)
+{
+  TENSOR_PARAM(0, a);
+  TENSOR_PARAM(1, b);
+  TENSOR(at::fmod(*a, *b));
+}
+
 NIF(quotient)
 {
   TENSOR_PARAM(0, a);
@@ -690,15 +697,19 @@ NIF(tensordot)
     // if any of the tensors is batched, we need to apply some transformations
     // on the inputs and on the result to wrap the batched APIs that torch exposes
     std::vector<at::BatchDim> batch_dims1, batch_dims2;
+    int64_t vmap_level = 0;
+
     for (auto dim : batch_axes1)
     {
-      batch_dims1.push_back(at::BatchDim(0, dim));
+      batch_dims1.push_back(at::BatchDim(vmap_level++, dim));
     }
     torch::Tensor batched_1 = at::makeBatched(*t1, at::BatchDims(batch_dims1.begin(), batch_dims1.end()));
 
+    vmap_level = 0;
+
     for (auto dim : batch_axes2)
     {
-      batch_dims2.push_back(at::BatchDim(0, dim));
+      batch_dims2.push_back(at::BatchDim(vmap_level++, dim));
     }
     torch::Tensor batched_2 = at::makeBatched(*t2, at::BatchDims(batch_dims2.begin(), batch_dims2.end()));
 
@@ -1212,6 +1223,7 @@ static ErlNifFunc nif_functions[] = {
     DF(subtract, 2),
     DF(divide, 2),
     DF(remainder, 2),
+    DF(fmod, 2),
     DF(quotient, 2),
     DF(multiply, 2),
     DF(power, 2),

@@ -410,7 +410,7 @@ defmodule Nx.LinAlg do
         [1.3333333730697632, -0.6666666865348816, 2.6666667461395264, -1.3333333730697632]
       >
 
-      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]))
       #Nx.Tensor<
         f64[3]
@@ -448,14 +448,14 @@ defmodule Nx.LinAlg do
         ]
       >
 
-      iex> a = Nx.tensor([[1, 1, 1], [0, 1, 1], [0, 0, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 1, 1], [0, 1, 1], [0, 0, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]), transform_a: :transpose, lower: false)
       #Nx.Tensor<
         f64[3]
         [1.0, 1.0, -1.0]
       >
 
-      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]), transform_a: :none)
       #Nx.Tensor<
         f64[3]
@@ -519,11 +519,11 @@ defmodule Nx.LinAlg do
       iex> Nx.LinAlg.triangular_solve(Nx.tensor([[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [1, 1, 1, 1]]), Nx.tensor([4, 2, 4, 2]))
       ** (ArgumentError) can't solve for singular matrix
 
-      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]), transform_a: :conjugate)
       ** (ArgumentError) complex numbers not supported yet
 
-      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]), transform_a: :other)
       ** (ArgumentError) invalid value for :transform_a option, expected :none, :transpose, or :conjugate, got: :other
 
@@ -567,7 +567,7 @@ defmodule Nx.LinAlg do
         [1.0, -2.0, 3.0, -4.0]
       >
 
-      iex> a = Nx.tensor([[1, 0, 1], [1, 1, 0], [1, 1, 1]], type: {:f, 64})
+      iex> a = Nx.tensor([[1, 0, 1], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.solve(a, Nx.tensor([0, 2, 1])) |> Nx.round()
       #Nx.Tensor<
         f64[3]
@@ -863,7 +863,7 @@ defmodule Nx.LinAlg do
         ]
       >
 
-      iex> t = Nx.tensor([[3, 2, 1], [0, 1, 1], [0, 0, 1], [0, 0, 1]], type: {:f, 32})
+      iex> t = Nx.tensor([[3, 2, 1], [0, 1, 1], [0, 0, 1], [0, 0, 1]], type: :f32)
       iex> {q, r} = Nx.LinAlg.qr(t, mode: :reduced)
       iex> q
       #Nx.Tensor<
@@ -885,7 +885,7 @@ defmodule Nx.LinAlg do
         ]
       >
 
-      iex> t = Nx.tensor([[3, 2, 1], [0, 1, 1], [0, 0, 1], [0, 0, 0]], type: {:f, 32})
+      iex> t = Nx.tensor([[3, 2, 1], [0, 1, 1], [0, 0, 1], [0, 0, 0]], type: :f32)
       iex> {q, r} = Nx.LinAlg.qr(t, mode: :complete)
       iex> q
       #Nx.Tensor<
@@ -950,7 +950,7 @@ defmodule Nx.LinAlg do
   end
 
   @doc """
-  Calculates the Eigenvalues and Eigenvectors of batched symmetric 2-D matrices.
+  Calculates the Eigenvalues and Eigenvectors of batched Hermitian 2-D matrices.
 
   It returns `{eigenvals, eigenvecs}`.
 
@@ -1028,13 +1028,11 @@ defmodule Nx.LinAlg do
       ** (ArgumentError) tensor must be a square matrix or a batch of square matrices, got shape: {2, 3}
 
       iex> Nx.LinAlg.eigh(Nx.tensor([[1, 2], [3, 4]]))
-      ** (ArgumentError) input tensor must be symmetric
+      ** (ArgumentError) matrix must be hermitian, a matrix is hermitian iff X = adjoint(X)
   """
   def eigh(tensor, opts \\ []) do
     opts = keyword!(opts, max_iter: 50_000, eps: @default_eps)
     %T{type: type, shape: shape} = tensor = Nx.to_tensor(tensor)
-
-    Nx.Shared.raise_complex_not_implemented_yet(type, "LinAlg.eigh", 2)
 
     output_type = Nx.Type.to_floating(type)
 
@@ -1063,7 +1061,7 @@ defmodule Nx.LinAlg do
     * `:max_iter` - `integer`. Defaults to `1000`
       Number of maximum iterations before stopping the decomposition
 
-    * `:eps` - `float`. Defaults to 1.0e-12
+    * `:eps` - `float`. Defaults to 1.0e-10
       Tolerance applied during the decomposition
 
   Note not all options apply to all backends, as backends may have
@@ -1316,10 +1314,10 @@ defmodule Nx.LinAlg do
   end
 
   @doc """
-  Produces the tensor taken to the given power by dot-product.
+  Produces the tensor taken to the given power by matrix dot-product.
 
-  The input is always a square tensor and a non-negative integer,
-  and the output is a square tensor of the same dimensions as the input tensor.
+  The input is always a tensor of batched square matrices and an integer,
+  and the output is a tensor of the same dimensions as the input tensor.
 
   The dot-products are unrolled inside `defn`.
 
@@ -1362,8 +1360,38 @@ defmodule Nx.LinAlg do
         ]
       >
 
+      iex> Nx.LinAlg.matrix_power(Nx.iota({2, 2, 2}), 3)
+      #Nx.Tensor<
+        s64[2][2][2]
+        [
+          [
+            [6, 11],
+            [22, 39]
+          ],
+          [
+            [514, 615],
+            [738, 883]
+          ]
+        ]
+      >
+
+      iex> Nx.LinAlg.matrix_power(Nx.iota({2, 2, 2}), -3)
+      #Nx.Tensor<
+        f32[2][2][2]
+        [
+          [
+            [-4.875, 1.375],
+            [2.75, -0.75]
+          ],
+          [
+            [-110.375, 76.875],
+            [92.25, -64.25]
+          ]
+        ]
+      >
+
       iex> Nx.LinAlg.matrix_power(Nx.tensor([[1, 2], [3, 4], [5, 6]]), 1)
-      ** (ArgumentError) matrix_power/2 expects a square tensor, got tensor with shape: {3, 2}
+      ** (ArgumentError) matrix_power/2 expects a square matrix or a batch of square matrices, got tensor with shape: {3, 2}
   """
   @doc from_backend: false
   def matrix_power(tensor, power) when is_integer(power) and power < 0 do
@@ -1373,27 +1401,19 @@ defmodule Nx.LinAlg do
   # We need a special-case for 0 since the code below
   # is optimized to not compute an initial eye.
   def matrix_power(tensor, 0) do
-    case Nx.shape(tensor) do
-      {n, n} ->
-        :ok
-
-      shape ->
-        raise ArgumentError,
-              "matrix_power/2 expects a square tensor, got tensor with shape: #{inspect(shape)}"
-    end
+    shape = Nx.shape(tensor)
+    :ok = Nx.Shape.matrix_power(shape)
 
     Nx.eye(tensor)
   end
 
   def matrix_power(tensor, power) when is_integer(power) do
-    case Nx.shape(tensor) do
-      {n, n} ->
-        :ok
+    shape = Nx.shape(tensor)
+    :ok = Nx.Shape.matrix_power(shape)
 
-      shape ->
-        raise ArgumentError,
-              "matrix_power/2 expects a square tensor, got tensor with shape: #{inspect(shape)}"
-    end
+    rank = Nx.rank(tensor)
+    batches = Enum.to_list(0..(rank - 3)//1)
+    dot_product = &Nx.dot(&1, [rank - 1], batches, &2, [rank - 2], batches)
 
     power
     |> Integer.digits(2)
@@ -1401,22 +1421,22 @@ defmodule Nx.LinAlg do
     |> Enum.reverse()
     |> Enum.reduce({nil, tensor}, fn
       1, {nil, exp_tensor} ->
-        {exp_tensor, Nx.dot(exp_tensor, exp_tensor)}
+        {exp_tensor, dot_product.(exp_tensor, exp_tensor)}
 
       1, {result_tensor, exp_tensor} ->
-        {Nx.dot(result_tensor, exp_tensor), Nx.dot(exp_tensor, exp_tensor)}
+        {dot_product.(result_tensor, exp_tensor), dot_product.(exp_tensor, exp_tensor)}
 
       0, {result_tensor, exp_tensor} ->
-        {result_tensor, Nx.dot(exp_tensor, exp_tensor)}
+        {result_tensor, dot_product.(exp_tensor, exp_tensor)}
     end)
     |> then(fn
       {nil, exp_tensor} -> exp_tensor
-      {result, exp_tensor} -> Nx.dot(result, exp_tensor)
+      {result, exp_tensor} -> dot_product.(result, exp_tensor)
     end)
   end
 
   @doc """
-  Calculates the determinant of a square 2D tensor.
+  Calculates the determinant of batched square matrices.
 
   ### Examples
 
@@ -1473,6 +1493,15 @@ defmodule Nx.LinAlg do
         48.0
       >
 
+      iex> Nx.LinAlg.determinant(Nx.tensor([
+      ...> [[2, 4, 6, 7], [5, 1, 8, 8], [1, 7, 3, 1], [3, 9, 2, 4]],
+      ...> [[2, 5, 1, 3], [4, 1, 7, 9], [6, 8, 3, 2], [7, 8, 1, 4]]
+      ...> ]))
+      #Nx.Tensor<
+        f32[2]
+        [630.0, 630.0]
+      >
+
   If the axes are named, their names are not preserved in the output:
 
       iex> two_by_two = Nx.tensor([[1, 2], [3, 4]], names: [:x, :y])
@@ -1510,10 +1539,12 @@ defmodule Nx.LinAlg do
   # optional needs to work on the actual backend.
   def determinant(tensor) do
     tensor = Nx.to_tensor(tensor)
-    output = Nx.template({}, Nx.Type.to_floating(tensor.type))
+    shape = Nx.shape(tensor)
+    {batch_shape, matrix_shape} = shape |> Tuple.to_list() |> Enum.split(-2)
+    output = Nx.template(List.to_tuple(batch_shape), Nx.Type.to_floating(tensor.type))
 
-    case Nx.shape(tensor) do
-      {n, n} ->
+    case matrix_shape do
+      [n, n] ->
         :ok
 
       shape ->
@@ -1522,15 +1553,15 @@ defmodule Nx.LinAlg do
     end
 
     Nx.Shared.optional(:determinant, [tensor], output, fn tensor ->
-      case Nx.shape(tensor) do
-        {2, 2} ->
+      case matrix_shape do
+        [2, 2] ->
           determinant_2by2(tensor)
 
-        {3, 3} ->
+        [3, 3] ->
           determinant_3by3(tensor)
 
-        {n, n} ->
-          determinant_NbyN(tensor)
+        [n, n] ->
+          determinant_NbyN(tensor, batch_shape_n: List.to_tuple(batch_shape ++ [n]))
       end
     end)
   end
@@ -1545,9 +1576,10 @@ defmodule Nx.LinAlg do
   end
 
   defnp determinant_3by3(t) do
+    rank = Nx.rank(t)
     pos_t = Nx.tile(t, [1, 2])
 
-    neg_t = Nx.reverse(pos_t, axes: [1])
+    neg_t = Nx.reverse(pos_t, axes: [rank - 1])
 
     result =
       diagonal_product(pos_t, 0) +
@@ -1561,42 +1593,55 @@ defmodule Nx.LinAlg do
     result * 1.0
   end
 
-  defnp determinant_NbyN(t) do
-    nxn = {n, _} = Nx.shape(t)
+  defnp determinant_NbyN(t, opts \\ []) do
+    batch_shape_n = assert_keys(opts, [:batch_shape_n])[:batch_shape_n]
+    rank = Nx.rank(t)
+    shape = Nx.shape(t)
 
     # Taken from slogdet at https://github.com/google/jax/blob/a3a6afcd5b8bf3d60aba94054bb0001c0fcc50d7/jax/_src/numpy/linalg.py#L134
     {p, l, u} = Nx.LinAlg.lu(t)
 
-    diag = Nx.take_diagonal(l) * Nx.take_diagonal(u)
-    is_zero = Nx.any(diag == 0)
-    transitions = p |> Nx.real() |> Nx.dot(Nx.iota({n}))
+    diag = Nx.multiply(Nx.take_diagonal(l), Nx.take_diagonal(u))
+    is_zero = Nx.any(diag != 0, axes: [-1])
 
-    upper_tri_mask = Nx.iota(nxn, axis: 0) |> Nx.less(Nx.iota(nxn, axis: 1))
+    {batch_axes, transition_bcast_axes_1, transition_bcast_axes_2} = determinant_axes(rank)
+
+    transitions =
+      p
+      |> Nx.real()
+      |> Nx.dot(
+        [rank - 1],
+        batch_axes,
+        Nx.iota(batch_shape_n, axis: -1),
+        [rank - 2],
+        batch_axes
+      )
+
+    upper_tri_mask = Nx.iota(shape, axis: -2) |> Nx.less(Nx.iota(shape, axis: -1))
 
     parity =
       transitions
-      |> Nx.broadcast(nxn, axes: [0])
-      |> Nx.greater(transitions)
+      |> Nx.broadcast(shape, axes: transition_bcast_axes_1)
+      |> Nx.greater(Nx.broadcast(transitions, shape, axes: transition_bcast_axes_2))
       |> Nx.multiply(upper_tri_mask)
-      |> Nx.sum()
+      |> Nx.sum(axes: [-2, -1])
 
-    sign =
-      if is_zero do
-        0
-      else
-        -2 * rem(parity, 2) + 1
-      end
+    sign = -2 * Nx.remainder(parity, 2) + 1
+    is_zero * sign * Nx.product(diag, axes: [-1])
+  end
 
-    if is_zero do
-      0
-    else
-      sign * Nx.product(diag)
-    end
+  deftransformp determinant_axes(rank) do
+    batch_axes = Enum.to_list(0..(rank - 3)//1)
+    transition_bcast_axes_1 = Enum.to_list(0..(rank - 2))
+    transition_bcast_axes_2 = batch_axes ++ [rank - 1]
+    {batch_axes, transition_bcast_axes_1, transition_bcast_axes_2}
   end
 
   defnp diagonal_product(t, offset) do
+    rank = Nx.rank(t)
+
     t
     |> Nx.take_diagonal(offset: offset)
-    |> Nx.product()
+    |> Nx.product(axes: [rank - 2])
   end
 end

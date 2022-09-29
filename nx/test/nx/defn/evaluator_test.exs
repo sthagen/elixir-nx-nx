@@ -26,7 +26,19 @@ defmodule Nx.Defn.EvaluatorTest do
              Nx.tensor([1, 2, 3, 4, 5, 6])
 
     assert_raise RuntimeError, "cannot perform operations on a Nx.TemplateBackend tensor", fn ->
+      # Check we will pick Nx.Template from list
       concatenate(Nx.template({3}, {:f, 32}), Nx.template({3}, {:f, 32}))
+    end
+  end
+
+  defn slice(a, b), do: Nx.slice(a, [b], [1])
+
+  test "slice" do
+    assert slice(Nx.tensor([1, 2, 3]), Nx.tensor(0)) == Nx.tensor([1])
+
+    assert_raise RuntimeError, "cannot perform operations on a Nx.TemplateBackend tensor", fn ->
+      # Check we will pick Nx.Template from the slice
+      slice(Nx.tensor([1, 2, 3]), Nx.template({}, {:s, 32}))
     end
   end
 
@@ -60,7 +72,7 @@ defmodule Nx.Defn.EvaluatorTest do
 
       assert q ==
                Nx.tensor([
-                 [0.0, 0.9128709435462952],
+                 [-0.0, 0.9128709435462952],
                  [0.4472135901451111, 0.3651483654975891],
                  [0.8944271802902222, -0.18257418274879456]
                ])
@@ -68,7 +80,7 @@ defmodule Nx.Defn.EvaluatorTest do
       assert r ==
                Nx.tensor([
                  [4.4721360206604, 5.813776969909668],
-                 [0.0, 1.095445156097412]
+                 [-0.0, 1.095445156097412]
                ])
     end
 
