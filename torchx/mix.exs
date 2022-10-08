@@ -4,7 +4,7 @@ defmodule Torchx.MixProject do
   @source_url "https://github.com/elixir-nx/nx"
   @version "0.3.0"
 
-  @valid_targets ["cpu", "cu102", "cu111"]
+  @valid_targets ["cpu", "cu102", "cu113", "cu116"]
 
   @libtorch_version System.get_env("LIBTORCH_VERSION", "1.12.1")
   @libtorch_target System.get_env("LIBTORCH_TARGET", "cpu")
@@ -144,9 +144,7 @@ defmodule Torchx.MixProject do
                 "https://download.pytorch.org/libtorch/#{@libtorch_target}/libtorch-macos-#{@libtorch_version}.zip"
 
               _ ->
-                Mix.raise(
-                  "Please install PyTorch 1.12+ via Python and point LIBTORCH_DIR to the installation directory"
-                )
+                "https://github.com/mlverse/libtorch-mac-m1/releases/download/LibTorch/libtorch-v#{@libtorch_version}.zip"
             end
 
           {:win32, :nt} ->
