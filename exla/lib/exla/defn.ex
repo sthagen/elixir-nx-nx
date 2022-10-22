@@ -271,16 +271,7 @@ defmodule EXLA.Defn do
         Logger.debug("EXLA device #{executable.device_id} lock in #{us_to_ms(time)}ms")
       end
 
-      {time, res} =
-        :timer.tc(fn ->
-          maybe_outfeed(lock, executable, args, used_inputs, outputs, hooks, run_options)
-        end)
-
-      if debug? do
-        Logger.debug("EXLA execution on device #{executable.device_id} in #{us_to_ms(time)}ms")
-      end
-
-      res
+      maybe_outfeed(lock, executable, args, used_inputs, outputs, hooks, run_options)
     end
   end
 
@@ -554,7 +545,7 @@ defmodule EXLA.Defn do
           {computation, cache}
 
         %{} ->
-          {computation, cache} = token_computation(call_args, expr, state, cache)
+          {computation, cache} = token_computation("optional", call_args, expr, state, cache)
           {computation, Map.put(cache, key, computation)}
       end
 
@@ -940,13 +931,13 @@ defmodule EXLA.Defn do
   end
 
   defp to_operator(:reduce_max, [arg, opts], %{type: type, shape: shape}, state) do
-    min_finite = EXLA.Lib.min_finite(state.builder, type)
-    to_aggregate(:max, type, shape, arg, min_finite, opts, state)
+    min_number = EXLA.Lib.min_number(state.builder, type)
+    to_aggregate(:max, type, shape, arg, min_number, opts, state)
   end
 
   defp to_operator(:reduce_min, [arg, opts], %{type: type, shape: shape}, state) do
-    max_finite = EXLA.Lib.max_finite(state.builder, type)
-    to_aggregate(:min, type, shape, arg, max_finite, opts, state)
+    max_number = EXLA.Lib.max_number(state.builder, type)
+    to_aggregate(:min, type, shape, arg, max_number, opts, state)
   end
 
   defp to_operator(:reduce, [arg, acc, opts, fun], %{type: type, shape: shape}, _state) do
@@ -966,13 +957,13 @@ defmodule EXLA.Defn do
   end
 
   defp to_operator(:window_max, [arg, window_dims, opts], %{type: type}, state) do
-    min_finite = EXLA.Lib.min_finite(state.builder, type)
-    to_window_aggregate(:max, type, arg, min_finite, window_dims, opts, state)
+    min_number = EXLA.Lib.min_number(state.builder, type)
+    to_window_aggregate(:max, type, arg, min_number, window_dims, opts, state)
   end
 
   defp to_operator(:window_min, [arg, window_dims, opts], %{type: type}, state) do
-    max_finite = EXLA.Lib.max_finite(state.builder, type)
-    to_window_aggregate(:min, type, arg, max_finite, window_dims, opts, state)
+    max_number = EXLA.Lib.max_number(state.builder, type)
+    to_window_aggregate(:min, type, arg, max_number, window_dims, opts, state)
   end
 
   defp to_operator(:window_product, [arg, window_dims, opts], %{type: type}, state) do
@@ -1460,8 +1451,8 @@ defmodule EXLA.Defn do
     {EXLA.Builder.build(res), update_outfeed(cache, comp_cache)}
   end
 
-  defp token_computation(arg, expr, state, cache) do
-    subbuilder = subbuilder(state.builder, "optional_body")
+  defp token_computation(name, arg, expr, state, cache) do
+    subbuilder = subbuilder(state.builder, name)
 
     arg_token = EXLA.Op.parameter(subbuilder, 0, EXLA.Shape.make_token_shape(), "p0")
 
@@ -1565,15 +1556,16 @@ defmodule EXLA.Defn do
 
     acc =
       case initial do
-        %EXLA.Op{} = initial ->
-          initial
-
-        initial when is_number(initial) ->
-          EXLA.Op.constant_r0(state.builder, initial, type)
+        %EXLA.Op{} = initial -> initial
+        initial when is_number(initial) -> EXLA.Op.constant_r0(state.builder, initial, type)
       end
 
     args = [%{type: type, shape: {}}, %{type: type, shape: {}}]
-    comp = op_computation(op, args, state)
+    # We reverse the argument order because :nan + :infinity
+    # returns :nan but :infinity + :nan returns :infinity.
+    # So we want to keep the current value as first argument
+    # to preserve such properties.
+    comp = op_computation(op, args, state, &Enum.reverse/1)
     keep_axes = opts[:keep_axes]
     result = EXLA.Op.reduce(arg, acc, comp, reduce_axes(arg, opts[:axes]))
 
@@ -1612,31 +1604,35 @@ defmodule EXLA.Defn do
     {pred_op, cache} = recur_operator(pred, state, cache)
     pred_op = to_type(pred_op, {:pred, 8})
 
-    {true_args, true_comp, cache} = to_if_branch(true, on_true, state, cache)
-    {false_args, false_comp, cache} = to_if_branch(false, on_false, state, cache)
+    true_ids = Tree.scope_ids(on_true)
+    false_ids = Tree.scope_ids(on_false)
+
+    {true_args, true_comp, cache} = to_if_branch(true, on_true, true_ids, false_ids, state, cache)
+
+    {false_args, false_comp, cache} =
+      to_if_branch(false, on_false, false_ids, true_ids, state, cache)
+
     {EXLA.Op.conditional(pred_op, true_args, true_comp, false_args, false_comp), cache}
   end
 
-  defp collect_arg?(_id, :parameter, _args, _pred_ids),
+  defp collect_arg?(_id, :parameter, _args, _shared_ids),
     do: true
 
   # We never pass reference to tuples around, only through their elements,
   # so if a tuple is in a predicate, then it all must be in a predicate.
-  defp collect_arg?(_id, :elem, [%T{data: %Expr{id: tuple_id}}, _pos], pred_ids)
-       when is_map_key(pred_ids, tuple_id),
+  defp collect_arg?(_id, :elem, [%T{data: %Expr{id: tuple_id}}, _pos], {parent_ids, sibling_ids})
+       when is_map_key(parent_ids, tuple_id) or is_map_key(sibling_ids, tuple_id),
        do: true
 
-  defp collect_arg?(id, _op, _args, pred_ids) when is_map_key(pred_ids, id),
-    do: true
+  defp collect_arg?(id, _op, _args, {parent_ids, sibling_ids}),
+    do: is_map_key(parent_ids, id) or is_map_key(sibling_ids, id)
 
-  defp collect_arg?(_id, _op, _args, _pred_ids), do: false
-
-  defp collect_args(%T{data: %Expr{id: id, op: op, args: args}} = expr, {cache, ids}, pred_ids) do
+  defp collect_args(%T{data: %Expr{id: id, op: op, args: args}} = expr, {cache, ids}, shared_ids) do
     cond do
       op == :constant ->
         {expr, {cache, ids}}
 
-      collect_arg?(id, op, args, pred_ids) ->
+      collect_arg?(id, op, args, shared_ids) ->
         case ids do
           %{^id => {_, _, new}} ->
             {new, {cache, ids}}
@@ -1652,15 +1648,17 @@ defmodule EXLA.Defn do
 
       true ->
         {args, {cache, ids}} =
-          Tree.apply_args(expr, :scope, {cache, ids}, &collect_args(&1, &2, pred_ids))
+          Tree.apply_args(expr, :scope, {cache, ids}, &collect_args(&1, &2, shared_ids))
 
         expr = put_in(expr.data.args, args)
         {expr, {Map.put(cache, id, expr), ids}}
     end
   end
 
-  defp to_if_branch(bool, expr, %{scope_ids: ids} = state, cache) do
-    {expr, {_, ids_args}} = Composite.traverse(expr, {%{}, %{}}, &collect_args(&1, &2, ids))
+  defp to_if_branch(bool, expr, current_ids, other_ids, %{scope_ids: ids} = state, cache) do
+    {expr, {_, ids_args}} =
+      Composite.traverse(expr, {%{}, %{}}, &collect_args(&1, &2, {ids, other_ids}))
+
     sorted_ids_args = Enum.sort_by(ids_args, fn {_id, {i, _old, _new}} -> i end)
 
     {args, cache} =
@@ -1676,7 +1674,7 @@ defmodule EXLA.Defn do
           state
           | builder: subbuilder,
             params: Map.new(params),
-            scope_ids: Tree.scope_ids(expr)
+            scope_ids: current_ids
         }
 
         recur_composite(expr, &cast_pred_to_u8/1, comp_state, comp_cache)

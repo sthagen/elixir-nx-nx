@@ -2129,6 +2129,10 @@ defmodule EXLA.Defn.ExprTest do
       )
     end
 
+    test "computes the minimum across nan" do
+      assert_equal(Nx.tensor([:nan, :nan, :nan]) |> reduce_min(), Nx.tensor(:nan))
+    end
+
     defn reduce_min_pos_axis(t), do: Nx.reduce_min(t, axes: [1])
     defn reduce_min_neg_axis(t), do: Nx.reduce_min(t, axes: [-3])
     defn reduce_min_pos_neg_axis(t), do: Nx.reduce_min(t, axes: [1, -3])
@@ -2364,12 +2368,12 @@ defmodule EXLA.Defn.ExprTest do
         ),
         Nx.tensor([
           [
-            [-3.4028234663852886e38, 4.0, 2.0, 3.0, -3.4028234663852886e38],
-            [-3.4028234663852886e38, 2.0, 5.0, 6.5, -3.4028234663852886e38]
+            [:neg_infinity, 4.0, 2.0, 3.0, :neg_infinity],
+            [:neg_infinity, 2.0, 5.0, 6.5, :neg_infinity]
           ],
           [
-            [-3.4028234663852886e38, 1.2, 2.2, 3.2, -3.4028234663852886e38],
-            [-3.4028234663852886e38, 4.0, 5.0, 6.2, -3.4028234663852886e38]
+            [:neg_infinity, 1.2, 2.2, 3.2, :neg_infinity],
+            [:neg_infinity, 4.0, 5.0, 6.2, :neg_infinity]
           ]
         ])
       )
@@ -2429,12 +2433,12 @@ defmodule EXLA.Defn.ExprTest do
         ),
         Nx.tensor([
           [
-            [3.4028234663852886e38, 4.0, 2.0, 3.0, 3.4028234663852886e38],
-            [3.4028234663852886e38, 2.0, 5.0, 6.5, 3.4028234663852886e38]
+            [:infinity, 4.0, 2.0, 3.0, :infinity],
+            [:infinity, 2.0, 5.0, 6.5, :infinity]
           ],
           [
-            [3.4028234663852886e38, 1.2, 2.2, 3.2, 3.4028234663852886e38],
-            [3.4028234663852886e38, 4.0, 5.0, 6.2, 3.4028234663852886e38]
+            [:infinity, 1.2, 2.2, 3.2, :infinity],
+            [:infinity, 4.0, 5.0, 6.2, :infinity]
           ]
         ])
       )
@@ -3984,7 +3988,7 @@ defmodule EXLA.Defn.ExprTest do
     test "works on a 50x50 matrix" do
       tensor = Nx.random_normal({50, 50})
       tensor = Nx.dot(tensor, Nx.transpose(tensor))
-      tensor = Nx.add(tensor, Nx.multiply(50, Nx.eye(tensor)))
+      tensor = Nx.add(tensor, Nx.multiply(50, Nx.eye(Nx.shape(tensor))))
 
       l = cholesky(tensor)
       assert_all_close(Nx.dot(l, Nx.transpose(l)), tensor, atol: 1.0e-4, rtol: 1.0e-2)
@@ -4028,7 +4032,7 @@ defmodule EXLA.Defn.ExprTest do
   end
 
   describe "take_along_axis/3" do
-    defn take_along_axis(t, idx, axis \\ 0), do: Nx.take_along_axis(t, idx, axis: axis)
+    defn take_along_axis(t, idx, opts \\ [axis: 0]), do: Nx.take_along_axis(t, idx, opts)
 
     defn sort_with_take_along_axis(t, opts \\ []) do
       idx = Nx.argsort(t, opts)
@@ -4040,7 +4044,7 @@ defmodule EXLA.Defn.ExprTest do
       i = Nx.tensor([[[0, 1], [0, 1]], [[0, 1], [0, 1]], [[0, 1], [0, 1]]])
 
       assert_equal(
-        take_along_axis(t, i, 2),
+        take_along_axis(t, i, axis: 2),
         Nx.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]], [[9, 10], [11, 12]]])
       )
     end
@@ -4056,7 +4060,7 @@ defmodule EXLA.Defn.ExprTest do
         ])
 
       assert_equal(
-        take_along_axis(t, i, 2),
+        take_along_axis(t, i, axis: 2),
         Nx.tensor([
           [[1, 2, 2, 1], [3, 4, 4, 3]],
           [[5, 6, 6, 5], [7, 8, 8, 7]],
