@@ -643,12 +643,13 @@ defmodule EXLA.Defn do
     EXLA.Lib.iota(state.builder, shape, axis)
   end
 
-  defp to_operator(:eye, [], %{type: type, shape: {n, n}}, state) do
-    iota_type = Nx.Type.merge_number({:u, 8}, n)
-    iota_shape = EXLA.Shape.make_shape(iota_type, {n, n})
+  defp to_operator(:eye, [], %{type: type, shape: shape}, state) do
+    iota_type = Nx.Type.merge_number({:u, 8}, Tuple.product(shape))
+    iota_shape = EXLA.Shape.make_shape(iota_type, shape)
+    rank = tuple_size(shape)
 
-    i0 = EXLA.Op.iota(state.builder, iota_shape, 0)
-    i1 = EXLA.Op.iota(state.builder, iota_shape, 1)
+    i0 = EXLA.Op.iota(state.builder, iota_shape, rank - 2)
+    i1 = EXLA.Op.iota(state.builder, iota_shape, rank - 1)
     to_type(EXLA.Op.equal(i0, i1), type)
   end
 
@@ -914,12 +915,12 @@ defmodule EXLA.Defn do
 
   ## to_operator reduction
 
-  defp to_operator(:all, [arg, opts], _ans, state) do
-    to_aggregate(:bitwise_and, {:pred, 8}, {}, arg, 1, opts, state)
+  defp to_operator(:all, [arg, opts], %{shape: shape}, state) do
+    to_aggregate(:bitwise_and, {:pred, 8}, shape, arg, 1, opts, state)
   end
 
-  defp to_operator(:any, [arg, opts], _ans, state) do
-    to_aggregate(:bitwise_or, {:pred, 8}, {}, arg, 0, opts, state)
+  defp to_operator(:any, [arg, opts], %{shape: shape}, state) do
+    to_aggregate(:bitwise_or, {:pred, 8}, shape, arg, 0, opts, state)
   end
 
   defp to_operator(:sum, [arg, opts], %{type: type, shape: shape}, state) do
