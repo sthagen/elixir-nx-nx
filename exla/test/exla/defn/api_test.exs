@@ -20,8 +20,8 @@ defmodule EXLA.Defn.APITest do
           EXLA.jit(&add_two/2, debug: true).(2, 3)
         end)
 
-      assert logs =~ ~r"EXLA defn evaluation( cache hit)? in \d+\.\dms"
-      assert logs =~ ~r"EXLA compilation( cache hit)? in \d+\.\dms"
+      assert logs =~ ~r"EXLA defn evaluation #Function<[^>]+>( cache hit)? in \d+\.\dms"
+      assert logs =~ ~r"EXLA compilation #Function<[^>]+>( cache hit)? in \d+\.\dms"
       assert logs =~ ~r"EXLA device \d lock in \d+\.\dms"
 
       logs =
@@ -29,8 +29,8 @@ defmodule EXLA.Defn.APITest do
           EXLA.jit(&add_two/2, debug: true).(2, 3)
         end)
 
-      assert logs =~ ~r"EXLA defn evaluation cache hit in \d+\.\dms"
-      assert logs =~ ~r"EXLA compilation cache hit in \d+\.\dms"
+      assert logs =~ ~r"EXLA defn evaluation #Function<[^>]+> cache hit in \d+\.\dms"
+      assert logs =~ ~r"EXLA compilation #Function<[^>]+> cache hit in \d+\.\dms"
       assert logs =~ ~r"EXLA device \d lock in \d+\.\d+ms"
     end
   end
@@ -412,6 +412,56 @@ defmodule EXLA.Defn.APITest do
 
       assert_equal(Nx.Stream.done(stream), Nx.tensor(3))
       refute_received _
+    end
+  end
+
+  describe "telemetry" do
+    defn telemetry_add_two(a, b), do: a + b
+
+    def telemetry_handler(_event_name, measurements, metadata, _config) do
+      send(self(), {measurements, metadata})
+    end
+
+    test "executes event when function is compiled" do
+      :ok =
+        :telemetry.attach(__MODULE__, [:exla, :compilation], &__MODULE__.telemetry_handler/4, nil)
+
+      on_exit(fn -> :telemetry.detach(__MODULE__) end)
+
+      fun = &telemetry_add_two/2
+      EXLA.jit(fun).(2, 3)
+      assert_received {measurements, metadata}
+
+      assert %{compile_time: compile_time, eval_time: eval_time, total_time: total_time} =
+               measurements
+
+      assert metadata == %{key: fun}
+
+      assert is_integer(compile_time)
+      assert eval_time > 0
+      assert is_integer(eval_time)
+      assert compile_time > 0
+      assert total_time == compile_time + eval_time
+
+      EXLA.jit(fun).(4, 5)
+      refute_received _
+
+      a = Nx.tensor([1, 2])
+      b = Nx.tensor([3, 4])
+      EXLA.jit(fun).(a, b)
+
+      assert_received {measurements, metadata}
+
+      assert %{compile_time: compile_time, eval_time: eval_time, total_time: total_time} =
+               measurements
+
+      assert metadata == %{key: fun}
+
+      assert is_integer(compile_time)
+      assert eval_time > 0
+      assert is_integer(eval_time)
+      assert compile_time > 0
+      assert total_time == compile_time + eval_time
     end
   end
 end
