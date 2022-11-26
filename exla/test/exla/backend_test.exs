@@ -1,5 +1,5 @@
 defmodule EXLA.BackendTest do
-  use ExUnit.Case, async: true
+  use EXLA.Case, async: true
 
   setup do
     Nx.default_backend(EXLA.Backend)
@@ -10,6 +10,9 @@ defmodule EXLA.BackendTest do
     expm1: 1,
     erfc: 1,
     erf: 1,
+    sin: 1,
+    cos: 1,
+    tan: 1,
     cosh: 1,
     tanh: 1,
     asin: 1,
@@ -135,5 +138,16 @@ defmodule EXLA.BackendTest do
                  fn ->
                    Nx.backend_transfer(Nx.tensor([1, 2]), {EXLA.Backend, client: :unknown})
                  end
+  end
+
+  describe "svd" do
+    test "reconstructs original matrix" do
+      t = Nx.iota({4, 4})
+
+      assert {u, s, vt} = Nx.LinAlg.svd(t)
+
+      reconstructed = u |> Nx.multiply(s) |> Nx.dot(vt)
+      assert_all_close(t, reconstructed, atol: 1.0e-5)
+    end
   end
 end

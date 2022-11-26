@@ -294,6 +294,21 @@ defmodule Nx do
         ]
       >
 
+  You can also use `..` as the full-slice range, which means you want to
+  keep a given dimension as is:
+
+      iex> t = Nx.tensor([[1, 2], [3, 4], [5, 6], [7, 8]])
+      iex> t[[.., 1..-1//1]] # Drop only the first "column"
+      #Nx.Tensor<
+        s64[4][1]
+        [
+          [2],
+          [4],
+          [6],
+          [8]
+        ]
+      >
+
   You can mix both ranges and integers in the list too:
 
       iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]])
@@ -3143,7 +3158,7 @@ defmodule Nx do
   def compatible?(%T{} = left, %T{} = right) do
     %{type: type, shape: shape, names: left_names} = left
 
-    case to_tensor(right) do
+    case right do
       %{type: ^type, shape: ^shape, names: right_names} ->
         compatible_names?(left_names, right_names)
 
@@ -5994,8 +6009,10 @@ defmodule Nx do
       Nx.Shared.raise_complex_not_supported("complex", 2)
     end
 
+    t = type(real) |> Nx.Type.merge(type(imag)) |> Nx.Type.to_complex()
+
     imag
-    |> multiply(Nx.Constants.i())
+    |> multiply(Nx.Constants.i(type: t))
     |> add(real)
   end
 
@@ -10217,12 +10234,16 @@ defmodule Nx do
     strides = Keyword.fetch!(opts, :strides)
     %T{shape: shape, names: names} = tensor = to_tensor(tensor)
     axis = Nx.Shape.normalize_axis(shape, axis, names)
-    rank = rank(shape)
 
-    start_indices = List.duplicate(0, rank) |> List.replace_at(axis, start_index)
-    lengths = shape |> put_elem(axis, len) |> Tuple.to_list()
-    strides = List.duplicate(1, rank) |> List.replace_at(axis, strides)
-    slice(tensor, start_indices, lengths, strides: strides)
+    if start_index == 0 and strides == 1 and elem(shape, axis) == len do
+      tensor
+    else
+      rank = rank(shape)
+      start_indices = List.duplicate(0, rank) |> List.replace_at(axis, start_index)
+      lengths = shape |> put_elem(axis, len) |> Tuple.to_list()
+      strides = List.duplicate(1, rank) |> List.replace_at(axis, strides)
+      slice(tensor, start_indices, lengths, strides: strides)
+    end
   end
 
   @doc false

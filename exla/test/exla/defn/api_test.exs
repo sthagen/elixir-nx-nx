@@ -9,7 +9,8 @@ defmodule EXLA.Defn.APITest do
     defn add_two(a, b), do: a + b
 
     test "raises on invalid device_id" do
-      assert_raise RuntimeError, ~r"Invalid device ordinal value \(1024\)", fn ->
+      # the message is different between backends
+      assert_raise RuntimeError, ~r/1024/, fn ->
         EXLA.jit(&add_two/2, device_id: 1024).(2, 3)
       end
     end
@@ -77,6 +78,15 @@ defmodule EXLA.Defn.APITest do
     test "can be used with nested collections" do
       inp = %Container{a: {Nx.tensor(1), Nx.tensor(2)}, b: %{a: Nx.tensor(3), b: Nx.tensor(4)}}
       assert_equal(container_with_map_tuple(inp), Nx.tensor(24))
+    end
+  end
+
+  describe "batch" do
+    test "when padded" do
+      input = Nx.tensor([[1, 2, 3]], backend: EXLA.Backend)
+      batch = [input] |> Nx.Batch.concatenate() |> Nx.Batch.pad(1)
+      predict = Nx.Defn.jit(fn input -> input end, compiler: EXLA)
+      assert_equal(predict.(batch), Nx.tensor([[1, 2, 3], [0, 0, 0]]))
     end
   end
 

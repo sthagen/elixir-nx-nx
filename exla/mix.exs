@@ -8,7 +8,7 @@ defmodule EXLA.MixProject do
     [
       app: :exla,
       version: @version,
-      elixir: "~> 1.13",
+      elixir: "~> 1.14",
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
       docs: docs(),
@@ -55,7 +55,7 @@ defmodule EXLA.MixProject do
       # {:nx, "~> 0.4.0"},
       {:nx, path: "../nx"},
       {:telemetry, "~> 0.4.0 or ~> 1.0"},
-      {:xla, "~> 0.3.0", runtime: false},
+      {:xla, "~> 0.4.0", runtime: false},
       {:elixir_make, "~> 0.6", runtime: false},
       {:benchee, "~> 1.0", only: :dev},
       {:ex_doc, "~> 0.29.0", only: :docs}

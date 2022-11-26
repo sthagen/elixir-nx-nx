@@ -2,6 +2,7 @@ defmodule NxTest do
   use ExUnit.Case, async: true
 
   import Nx.Helpers
+  import Nx, only: :sigils
 
   defp commute(a, b, fun) do
     fun.(a, b)
@@ -1016,6 +1017,26 @@ defmodule NxTest do
       assert_raise(ArgumentError, ~r/cannot batch scalar tensor/, fn ->
         Nx.to_batched(t, 1)
       end)
+    end
+  end
+
+  describe "compatible?/2" do
+    test "non-composite types" do
+      refute Nx.compatible?(Complex.new(0, 2), 2)
+      refute Nx.compatible?(2, Complex.new(0, 2))
+      refute Nx.compatible?(Complex.new(0, 2), ~V[2])
+      refute Nx.compatible?(~V[2], Complex.new(0, 2))
+      refute Nx.compatible?(2, ~V[2i])
+      refute Nx.compatible?(~V[2i], 2)
+      refute Nx.compatible?(~V[2], ~V[2i])
+      assert Nx.compatible?(Complex.new(2), Complex.new(0, 2))
+      assert Nx.compatible?(2, 0)
+    end
+
+    test "structs" do
+      args = {1, Complex.new(1), Nx.tensor(1)}
+      c = %Container{a: args, b: args}
+      assert Nx.compatible?(c, c)
     end
   end
 
@@ -2348,6 +2369,57 @@ defmodule NxTest do
 
       assert Nx.median(t, axis: -1, keep_axis: true) ==
                Nx.tensor([[[5], [6]], [[3], [6]]])
+    end
+  end
+
+  describe "complex/2" do
+    @t32 Nx.tensor(1, type: :f32)
+    @t64 Nx.tensor(2, type: :f64)
+
+    test "preserves precision of real and imaginary parts" do
+      t = Nx.tensor(Complex.new(1, 2), type: :c128)
+      c = Nx.complex(Nx.real(t), Nx.imag(t))
+      assert Nx.type(c) == {:c, 128}
+
+      t = Nx.tensor(Complex.new(1, 3), type: :c64)
+      c = Nx.complex(Nx.real(t), Nx.imag(t))
+      assert Nx.type(c) == {:c, 64}
+    end
+
+    test "returns a tensor with type :c128 for 64 bit inputs" do
+      t = Nx.complex(@t64, @t64)
+      assert Nx.type(t) == {:c, 128}
+    end
+
+    test "returns a tensor with type :c128 for mixed 32 and 64 bit inputs" do
+      t = Nx.complex(@t32, @t64)
+      assert Nx.type(t) == {:c, 128}
+
+      t = Nx.complex(@t64, @t32)
+      assert Nx.type(t) == {:c, 128}
+    end
+  end
+
+  describe "as_type/2" do
+    test "preserves the imaginary part when casting between :c68 and :c128" do
+      t64 = Nx.tensor(Complex.new(1, 2), type: :c64)
+      t128 = Nx.tensor(Complex.new(1, 2), type: :c128)
+
+      assert Nx.as_type(t128, :c64) == t64
+      assert Nx.as_type(t64, :c128) == t128
+    end
+
+    test "keeps only real part when downcasting complex to real" do
+      z = Complex.new(1, 2)
+      t64 = Nx.tensor(z, type: :c64)
+
+      for type <- [f: 32, f: 64] do
+        assert Nx.as_type(t64, type) == Nx.tensor(z.re, type: type)
+      end
+
+      for type <- [s: 64, s: 32, s: 16, s: 8, u: 64, u: 32, u: 16, u: 8] do
+        assert Nx.as_type(t64, type) == Nx.tensor(trunc(z.re), type: type)
+      end
     end
   end
 end

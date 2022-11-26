@@ -82,6 +82,7 @@ defmodule Nx.MixProject do
         # Nx.Defn,
         # Nx.Defn.Kernel,
         # Nx.LinAlg,
+        # Nx.Serving,
 
         Protocols: [
           Nx.Container,
@@ -89,6 +90,7 @@ defmodule Nx.MixProject do
           Nx.Stream
         ],
         Structs: [
+          Nx.Batch,
           Nx.Heatmap,
           Nx.Tensor
         ],
