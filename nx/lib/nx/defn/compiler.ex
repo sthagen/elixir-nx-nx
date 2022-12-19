@@ -134,8 +134,7 @@ defmodule Nx.Defn.Compiler do
   end
 
   defp runtime_fun(args, fun, compiler) do
-    tuple = Nx.default_backend()
-    Nx.default_backend(Nx.Defn.Expr)
+    previous_backend = Process.put(Nx.Shared.backend_pdict_key(), {Nx.Defn.Expr, []})
     previous = Process.put(Nx.Defn.Compiler, compiler)
 
     try do
@@ -143,7 +142,11 @@ defmodule Nx.Defn.Compiler do
       |> apply(args)
       |> Nx.Defn.Composite.traverse(&Nx.Defn.Expr.tensor/1)
     after
-      Nx.default_backend(tuple)
+      if previous_backend do
+        Process.put(Nx.Shared.backend_pdict_key(), previous_backend)
+      else
+        Process.delete(Nx.Shared.backend_pdict_key())
+      end
 
       if previous do
         Process.put(Nx.Defn.Compiler, compiler)
@@ -250,7 +253,7 @@ defmodule Nx.Defn.Compiler do
 
   defp compile_each_defn({{name, arity} = def, def_meta}, state) do
     %{defaults: defaults} = def_meta
-    {{kind, _meta, args, ast}, state} = get_and_normalize_definition(def, state)
+    {{kind, _meta, args, ast}, state} = get_and_normalize_defn(def, state)
 
     defn_name = defn_name(name)
 
@@ -323,7 +326,7 @@ defmodule Nx.Defn.Compiler do
     res
   end
 
-  defp get_and_normalize_definition(def, state) do
+  defp get_and_normalize_defn({name, arity} = def, state) do
     {:v1, kind, meta, clauses} = Module.get_definition(state.module, def)
     state = %{state | function: def, line: meta[:line] || state.line, rewrite_underscore?: true}
 
@@ -331,7 +334,7 @@ defmodule Nx.Defn.Compiler do
 
     case clauses do
       [] ->
-        compile_error!(meta, state, "cannot have #{type_str} without clauses")
+        compile_error!(meta, state, "cannot have #{type_str} #{name}/#{arity} without clauses")
 
       [{meta, args, [], ast}] ->
         {args, state} = normalize_args(args, meta, state)
@@ -339,7 +342,11 @@ defmodule Nx.Defn.Compiler do
         {{kind, meta, args, ast}, state}
 
       [_, _ | _] ->
-        compile_error!(meta, state, "cannot compile #{type_str} with multiple clauses")
+        compile_error!(
+          meta,
+          state,
+          "cannot compile #{type_str} #{name}/#{arity} with multiple clauses"
+        )
     end
   end
 

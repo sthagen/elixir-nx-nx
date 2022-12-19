@@ -3386,8 +3386,6 @@ defmodule Nx do
 
   ## Backend API
 
-  @backend_key {Nx, :default_backend}
-
   @doc """
   Sets the given `backend` as default in the **current process**.
 
@@ -3413,6 +3411,8 @@ defmodule Nx do
   Or use `Nx.global_default_backend/1` as it changes the
   default backend on all processes.
 
+  The function returns the value that was previously set as backend.
+
   ## Examples
 
       iex> Nx.default_backend({EXLA.Backend, device: :cuda})
@@ -3423,7 +3423,7 @@ defmodule Nx do
   """
   @doc type: :backend
   def default_backend(backend) do
-    Process.put(@backend_key, backend!(backend)) ||
+    Process.put(backend_pdict_key(), backend!(backend)) ||
       backend!(Application.fetch_env!(:nx, :default_backend))
   end
 
@@ -3448,6 +3448,7 @@ defmodule Nx do
         config: [nx: [default_backend: {EXLA.Backend, device: :cuda}]]
       )
 
+  The function returns the value that was previously set as global backend.
   """
   @doc type: :backend
   def global_default_backend(backend) do
@@ -3461,7 +3462,7 @@ defmodule Nx do
   """
   @doc type: :backend
   def default_backend() do
-    Process.get(@backend_key) || backend!(Application.fetch_env!(:nx, :default_backend))
+    Process.get(backend_pdict_key()) || backend!(Application.fetch_env!(:nx, :default_backend))
   end
 
   @doc """

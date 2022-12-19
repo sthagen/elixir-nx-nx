@@ -128,31 +128,12 @@ defmodule Nx.Defn do
 
       deftransformp custom_elixir_code(value), do: IO.inspect(value)
 
-  For example, the two code snippets invoke `IO.inspect/1`, which is
-  not a `defn` function, with the value of `res`. This is useful
-  as it allows developers to transform `defn` code to optimize,
-  add new properties, and so on.
+  The only difference between using `deftransform` and `deftransformp`
+  is wether you want to expose and share the code with other modules,
+  just like `def` and `defp`.
 
-  The only difference between using `deftransform` and `deftransformp` is
-  wether you want to expose and share the code with other modules, just
-  like `def` and `defp`.
-
-  Transforms can also be used to manipulate Elixir data structures,
-  such as options. `defn` expects all inputs to be tensors, with the
-  exception of a default argument (declared with `\\`) which will be
-  treated as options.
-
-  For example, imagine you want to support options where the :axis
-  key is required. While you can't invoke `Keyword` directly, you
-  can do it via a transform:
-
-      defn sum_axis(t, opts \\ []) do
-        opts = keyword!(opts, [:axis])
-        axis = get_axis(opts)
-        Nx.sum(t, axes: [axis])
-      end
-
-      deftransformp get_axis(opts), do: Keyword.fetch!(opts, :axis)
+  Transforms are useful to manipulate tensor expressions or
+  Elixir data structures without the constraints of `defn`.
 
   ## Inputs and outputs types
 
@@ -253,6 +234,14 @@ defmodule Nx.Defn do
 
         config :nx, :#{@app_key}, [compiler: EXLA, client: :cuda]
 
+  The function returns the values that were previously set as default
+  options.
+
+  ## Examples
+
+      iex> Nx.Defn.default_options(compiler: EXLA, client: :cuda)
+      iex> Nx.Defn.default_options()
+      [compiler: EXLA, client: :cuda]
   """
   def default_options(options) when is_list(options) do
     Process.put(@compiler_key, options) || Application.fetch_env!(:nx, @app_key)
@@ -272,6 +261,8 @@ defmodule Nx.Defn do
 
       config :nx, :#{@app_key}, [compiler: EXLA, client: :cuda]
 
+  The function returns the values that were previously set as global
+  default options.
   """
   def global_default_options(options) when is_list(options) do
     current = Application.fetch_env!(:nx, @app_key)
@@ -333,28 +324,13 @@ defmodule Nx.Defn do
         raise "cannot invoke compiled function when there is a JIT compilation happening"
       end
 
-      {templates, flatten} = compile_flatten(args, templates, 1, [])
-
-      if templates != [] do
-        raise ArgumentError, """
-        cannot invoke compiled function because the given arguments do not match compiled arguments
-
-        Compiled with:
-
-        #{inspect(template_args)}
-
-        Got:
-
-        #{inspect(args)}
-        """
-      end
-
+      flatten = compile_flatten(args, templates, template_args, 1, [])
       [res] = compiled_fun.([flatten])
       res
     end)
   end
 
-  defp compile_flatten([arg | args], templates, pos, acc) do
+  defp compile_flatten([arg | args], templates, template_args, pos, acc) do
     {_, {templates, acc}} =
       Nx.LazyContainer.traverse(arg, {templates, acc}, fn
         arg_template, fun, {[template | templates], acc} ->
@@ -370,19 +346,50 @@ defmodule Nx.Defn do
 
             #{inspect(arg_template)}
 
-            Within argument:
+            Expected argument:
+
+            #{inspect(Enum.fetch!(template_args, pos - 1))}
+
+            Actual argument:
 
             #{inspect(arg)}
             """
           end
 
           {:ok, {templates, [fun | acc]}}
+
+        _arg_template, _fun, {[], acc} ->
+          raise ArgumentError, """
+          cannot invoke compiled function because the given arguments do not match compiled arguments
+
+          Compiled with:
+
+          #{inspect(template_args)}
+
+          Got:
+
+          #{inspect(Enum.reverse(acc, [arg | args]))}
+          """
       end)
 
-    compile_flatten(args, templates, pos + 1, acc)
+    compile_flatten(args, templates, template_args, pos + 1, acc)
   end
 
-  defp compile_flatten([], templates, _pos, acc), do: {templates, Enum.reverse(acc)}
+  defp compile_flatten([], [], _template_args, _pos, acc), do: Enum.reverse(acc)
+
+  defp compile_flatten([], _templates, template_args, _pos, acc) do
+    raise ArgumentError, """
+    cannot invoke compiled function because the given arguments do not match compiled arguments
+
+    Compiled with:
+
+    #{inspect(template_args)}
+
+    Got:
+
+    #{inspect(Enum.reverse(acc))}
+    """
+  end
 
   @doc """
   Wraps an anonymous function with just-in-time compilation.

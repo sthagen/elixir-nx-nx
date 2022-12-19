@@ -394,7 +394,7 @@ defmodule EXLA.Defn do
     {out_inputs, in_inputs} = to_used.(used_inputs)
     comp_key = {ref, client.name, used_hooks, options}
 
-    {comp_time, {evaled, {executable, extra, outfeed_hooks}}} =
+    {comp_time, {evaled, {xla_time, executable, extra, outfeed_hooks}}} =
       :timer.tc(fn ->
         comp_cache_fun.(comp_key, fn ->
           shapes =
@@ -408,8 +408,12 @@ defmodule EXLA.Defn do
           {computation, extra, hooks} =
             to_computation.(expr || fun.(vars), out_inputs, inputs_and_shapes, used_hooks)
 
-          executable = EXLA.Computation.compile(computation, client, shapes, options)
-          {:ok, {executable, extra, hooks}}
+          {xla_time, executable} =
+            :timer.tc(fn ->
+              EXLA.Computation.compile(computation, client, shapes, options)
+            end)
+
+          {:ok, {xla_time, executable, extra, hooks}}
         end)
       end)
 
@@ -419,12 +423,17 @@ defmodule EXLA.Defn do
           do: {flag, {shapes, compile_hook(key, hooks, defined_hooks, template)}},
           into: %{}
 
-    if debug? do
-      hit_or_miss = if evaled, do: "miss", else: "hit"
+    cond do
+      not debug? ->
+        :ok
 
-      Logger.debug(
-        "EXLA compilation #{inspect(key)} cache #{hit_or_miss} in #{us_to_ms(comp_time)}ms"
-      )
+      evaled ->
+        Logger.debug(
+          "EXLA compilation #{inspect(key)} cache miss in #{us_to_ms(comp_time)}ms (#{us_to_ms(xla_time)}ms in XLA)"
+        )
+
+      true ->
+        Logger.debug("EXLA compilation #{inspect(key)} cache hit in #{us_to_ms(comp_time)}ms")
     end
 
     if expr || evaled do
@@ -702,8 +711,11 @@ defmodule EXLA.Defn do
 
   ## to_operator others
 
-  defp to_operator(:metadata, [op, _metadata], _ans, _state) do
-    op
+  defp to_operator(:metadata, [op, _metadata], _ans, state) do
+    case op do
+      %EXLA.Op{} -> op
+      _ -> EXLA.Op.tuple(state.builder, Tuple.to_list(op))
+    end
   end
 
   defp to_operator(:elem, [op, index], _ans, _state) do
@@ -817,14 +829,16 @@ defmodule EXLA.Defn do
     EXLA.Op.tuple(state.builder, [q, r])
   end
 
-  defp to_operator(
-         :svd,
-         [{%{type: type}, %{type: type}, %{type: type}}, tensor, _opts],
-         _ans,
-         state
-       ) do
-    {u, s, vt} = EXLA.Op.svd(to_type(tensor, type), state.precision)
-    EXLA.Op.tuple(state.builder, [u, s, vt])
+  defp to_operator(:eigh, [{%{type: type}, %{type: type}}, tensor, opts], _ans, state) do
+    {eigvec, eigval} =
+      EXLA.Op.eigh(
+        to_type(tensor, type),
+        1,
+        Keyword.fetch!(opts, :eps),
+        Keyword.fetch!(opts, :max_iter)
+      )
+
+    EXLA.Op.tuple(state.builder, [eigval, eigvec])
   end
 
   ## to_operator element-wise
