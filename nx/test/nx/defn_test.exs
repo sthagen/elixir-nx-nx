@@ -2312,7 +2312,7 @@ defmodule Nx.DefnTest do
     defn multi_clause_first(x), do: multi_clause_transform(x, &(&1 + &1))
     defn multi_clause_second(opts \\ []), do: multi_clause_transform(opts[:x], opts[:y])
 
-    deftransform(multi_clause_bodiless_tf(x \\ 1, y))
+    deftransform multi_clause_bodiless_tf(x \\ 1, y)
     deftransform multi_clause_bodiless_tf(1, y), do: y
     deftransform multi_clause_bodiless_tf(x, _y), do: x
 
@@ -2321,7 +2321,7 @@ defmodule Nx.DefnTest do
     defn multi_clause_transform_bodiless2(opts \\ []),
       do: multi_clause_bodiless_tf(opts[:a], opts[:b])
 
-    deftransformp(multi_clause_bodiless_tf_private(x \\ 1, y))
+    deftransformp multi_clause_bodiless_tf_private(x \\ 1, y)
     deftransformp multi_clause_bodiless_tf_private(1, y), do: y
     deftransformp multi_clause_bodiless_tf_private(x, _y), do: x
 
@@ -2329,6 +2329,31 @@ defmodule Nx.DefnTest do
 
     defn multi_clause_transform_bodiless4(opts \\ []),
       do: multi_clause_bodiless_tf_private(opts[:a], opts[:b])
+
+    # Multi-clause deftransform with guards
+    deftransform multi_clause_multi_arity_transform(x, y \\ 10, z \\ 20)
+
+    deftransform multi_clause_multi_arity_transform(x, y, opts) when is_list(opts),
+      do: {x, y, opts[:value]}
+
+    deftransform multi_clause_multi_arity_transform(x, y, w), do: {x, y, w}
+
+    deftransform multi_clause_multi_arity_transform(x, y, w, opts), do: {x, y, w, opts[:value]}
+
+    defmodule RemoteTransform do
+      import Nx.Defn
+
+      deftransform remote_with_defaults(x, y \\ 0), do: Nx.add(x, y)
+    end
+
+    defn call_remote_transform_1(x), do: RemoteTransform.remote_with_defaults(x)
+    defn call_remote_transform_2(x), do: RemoteTransform.remote_with_defaults(x, x + 1)
+
+    @tag compiler: Evaluator
+    test "can call remote deftransform with defaults from within defn" do
+      assert Nx.tensor(1) == call_remote_transform_1(1)
+      assert Nx.tensor(3) == call_remote_transform_2(1)
+    end
 
     test "can call deftransform and deftransformp functions from within defn" do
       result = deftransform_test(Nx.tensor(1), Nx.tensor(2), b: 3, c: 4)
@@ -2420,6 +2445,15 @@ defmodule Nx.DefnTest do
                    not rb
                  ])
       end
+    end
+
+    @tag compiler: Evaluator
+    test "deftransform supports multi-clause + multi-arity at the same time" do
+      assert multi_clause_multi_arity_transform(1) == {1, 10, 20}
+      assert multi_clause_multi_arity_transform(1, 2) == {1, 2, 20}
+      assert multi_clause_multi_arity_transform(1, 2, 3) == {1, 2, 3}
+      assert multi_clause_multi_arity_transform(1, 2, value: 4) == {1, 2, 4}
+      assert multi_clause_multi_arity_transform(1, 2, 3, value: 4) == {1, 2, 3, 4}
     end
   end
 end

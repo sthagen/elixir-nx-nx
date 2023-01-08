@@ -296,23 +296,32 @@ defmodule Nx.Defn.Compiler do
     {kind, meta, [Macro.update_meta(signature, &Keyword.delete(&1, :context)), block]}
   end
 
-  defp compile_each_transform({{name, max_arity}, _def_meta}, state) do
+  defp compile_each_transform({{name, defn_arity}, def_meta}, state) do
     defn_name = defn_name(name)
 
-    # {...} <- [Module...] is a trick so we can skip nil definitions for a given arity
-    ast =
-      for defn_arity <- 0..max_arity,
-          {:v1, kind, meta, _clauses} <- [Module.get_definition(state.module, {name, defn_arity})] do
-        defn_args = Macro.generate_arguments(defn_arity, __MODULE__)
+    %{defaults: defaults} = def_meta
+
+    case Module.get_definition(state.module, {name, defn_arity}) do
+      {:v1, kind, meta, _clauses} ->
+        all_args = Macro.generate_arguments(defn_arity, __MODULE__)
+
+        defn_args =
+          Enum.with_index(all_args, fn arg, i ->
+            case defaults do
+              %{^i => {meta, default}} -> {:\\, meta, [arg, default]}
+              %{} -> arg
+            end
+          end)
 
         quote line: meta[:line] do
           Kernel.unquote(kind)(unquote(defn_name)(unquote_splicing(defn_args)),
-            do: unquote(name)(unquote_splicing(defn_args))
+            do: unquote(name)(unquote_splicing(all_args))
           )
         end
-      end
 
-    {:__block__, [], ast}
+      _ ->
+        nil
+    end
   end
 
   @doc false
