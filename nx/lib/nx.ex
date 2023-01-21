@@ -946,7 +946,7 @@ defmodule Nx do
   Shortcut for `random_uniform(shape, 0.0, 1.0, opts)`.
   """
   # TODO: Deprecate this in Nx v0.5
-  @doc type: :random, deprecated: "Use Nx.Random.uniform/2 instead"
+  @doc type: :creation, deprecated: "Use Nx.Random.uniform/2 instead"
   def random_uniform(tensor_or_shape, opts \\ []) do
     random_uniform(tensor_or_shape, 0.0, 1.0, opts)
   end
@@ -1073,7 +1073,7 @@ defmodule Nx do
 
   """
   # TODO: Deprecate this in Nx v0.5
-  @doc type: :random, deprecated: "Use Nx.Random.uniform/2 instead"
+  @doc type: :creation, deprecated: "Use Nx.Random.uniform/2 instead"
   def random_uniform(tensor_or_shape, min, max, opts \\ []) do
     opts = keyword!(opts, [:type, :names, :backend])
     %T{type: min_type, shape: min_shape} = min = to_tensor(min)
@@ -1104,7 +1104,7 @@ defmodule Nx do
   Shortcut for `random_normal(shape, 0.0, 1.0, opts)`.
   """
   # TODO: Deprecate this in Nx v0.5
-  @doc type: :random, deprecated: "Use Nx.Random instead"
+  @doc type: :creation, deprecated: "Use Nx.Random instead"
   def random_normal(tensor_or_shape, opts \\ []) do
     random_normal(tensor_or_shape, 0.0, 1.0, opts)
   end
@@ -1191,7 +1191,7 @@ defmodule Nx do
 
   """
   # TODO: Deprecate this in Nx v0.5
-  @doc type: :random, deprecated: "Use Nx.Random instead"
+  @doc type: :creation, deprecated: "Use Nx.Random instead"
   def random_normal(tensor_or_shape, mu, sigma, opts \\ []) do
     opts = keyword!(opts, [:type, :names, :backend])
     %T{type: mu_type, shape: mu_shape} = mu = to_tensor(mu)
@@ -1261,7 +1261,7 @@ defmodule Nx do
         ]
       >
   """
-  @doc type: :random
+  @doc type: :creation
   def shuffle(tensor, opts \\ []) do
     opts = keyword!(opts, [:axis])
     %T{shape: shape, names: names} = tensor = to_tensor(tensor)
@@ -8892,6 +8892,8 @@ defmodule Nx do
   possible. Instead, use functions `sum/2`, `reduce_max/2`,
   `all/1`, and so forth.
 
+  Inside `defn`, consider using `Nx.Defn.Kernel.while/4` instead.
+
   ## Examples
 
       iex> Nx.reduce(Nx.tensor(42), 0, fn x, y -> Nx.add(x, y) end)
@@ -9146,6 +9148,8 @@ defmodule Nx do
   Therefore, you should avoid using `map/2` whenever possible
   and use other functions in the `Nx` module to achieve the
   desired result.
+
+  Inside `defn`, consider using `Nx.Defn.Kernel.while/4` instead.
 
   ### Examples
 
@@ -12082,6 +12086,114 @@ defmodule Nx do
 
     out = to_template(%{tensor | shape: output_shape, type: Nx.Type.to_complex(tensor.type)})
     apply(impl!(tensor), kind, [out, tensor, opts])
+  end
+
+  @doc """
+  Creates a tensor of shape `{n}` with linearly spaced samples between `start` and `stop`.
+
+  ## Options
+
+    * `:n` - The number of samples in the tensor.
+    * `:name` - Optional name for the output axis.
+    * `:type` - Optional type for the output. Defaults to `{:f, 32}`
+    * `:endpoint` - Boolean that indicates whether to include `stop`
+      as the last point in the output. Defaults to `true`
+
+  ## Examples
+
+      iex> Nx.linspace(5, 8, n: 5)
+      #Nx.Tensor<
+        f32[5]
+        [5.0, 5.75, 6.5, 7.25, 8.0]
+      >
+
+      iex> Nx.linspace(0, 10, n: 5, endpoint: false, name: :x)
+      #Nx.Tensor<
+        f32[x: 5]
+        [0.0, 2.0, 4.0, 6.0, 8.0]
+      >
+
+  For integer types, the results might not be what's expected.
+  When `endpoint: true` (the default), the step is given by
+  `step = (stop - start) / (n - 1)`, which means that instead
+  of a step of `3` in the example below, we get a step close to
+  `3.42`. The results are calculated first and only cast in the
+  end, so that the `:endpoint` condition is respected.
+
+      iex> Nx.linspace(0, 24, n: 8, type: {:u, 8}, endpoint: true)
+      #Nx.Tensor<
+        u8[8]
+        [0, 3, 6, 10, 13, 17, 20, 24]
+      >
+
+      iex> Nx.linspace(0, 24, n: 8, type: {:s, 64}, endpoint: false)
+      #Nx.Tensor<
+        s64[8]
+        [0, 3, 6, 9, 12, 15, 18, 21]
+      >
+
+  One can also pass two higher order tensors with the same shape `{j, k, ...}`, in which case
+  the output will be of shape `{j, k, ..., n}`.
+
+    iex> Nx.linspace(Nx.tensor([[[0, 10]]]), Nx.tensor([[[10, 100]]]), n: 10, name: :samples, type: {:u, 8})
+    #Nx.Tensor<
+      u8[1][1][2][samples: 10]
+      [
+        [
+          [
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 10],
+            [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+          ]
+        ]
+      ]
+    >
+
+  ### Error Cases
+
+      iex> Nx.linspace(0, 24, n: 1.0)
+      ** (ArgumentError) expected n to be a non-negative integer, got: 1.0
+
+      iex> Nx.linspace(Nx.tensor([[0, 1]]), Nx.tensor([1, 2, 3]), n: 2)
+      ** (ArgumentError) expected start and stop to have the same shape. Got shapes {1, 2} and {3}
+  """
+  @doc type: :creation
+  def linspace(start, stop, opts \\ []) do
+    opts = keyword!(opts, [:n, :name, type: {:f, 32}, endpoint: true])
+    start = to_tensor(start)
+    stop = to_tensor(stop)
+
+    n = opts[:n]
+
+    unless is_integer(n) and n > 0 do
+      raise ArgumentError, "expected n to be a non-negative integer, got: #{inspect(n)}"
+    end
+
+    {iota_shape, start, stop} =
+      case {shape(start), shape(stop)} do
+        {shape, shape} ->
+          iota_shape = Tuple.insert_at(shape, tuple_size(shape), n)
+          {iota_shape, new_axis(start, -1, opts[:name]), new_axis(stop, -1, opts[:name])}
+
+        {start_shape, stop_shape} ->
+          raise ArgumentError,
+                "expected start and stop to have the same shape. Got shapes #{inspect(start_shape)} and #{inspect(stop_shape)}"
+      end
+
+    divisor =
+      if opts[:endpoint] do
+        n - 1
+      else
+        n
+      end
+
+    step = Nx.subtract(stop, start) |> Nx.divide(divisor)
+
+    iota = iota(iota_shape, axis: -1, type: opts[:type])
+
+    iota
+    |> multiply(step)
+    |> add(start)
+    |> as_type(opts[:type])
   end
 
   ## Sigils
