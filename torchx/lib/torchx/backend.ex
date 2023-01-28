@@ -236,10 +236,6 @@ defmodule Torchx.Backend do
   end
 
   @impl true
-  def backend_copy(tensor, Nx.Tensor, opts) do
-    backend_copy(tensor, Nx.BinaryBackend, opts)
-  end
-
   def backend_copy(tensor, Torchx.Backend, opts) do
     Torchx.to_device(from_nx(tensor), device_option(opts)) |> to_nx(tensor)
   end
@@ -829,7 +825,7 @@ defmodule Torchx.Backend do
     raise ArithmeticError, "Torchx does not support complex values for atan2"
   end
 
-  ops = [:add, :subtract, :multiply, :power, :left_shift]
+  ops = [:add, :subtract, :multiply, :pow, :left_shift]
 
   for op <- ops do
     @impl true
@@ -1153,12 +1149,12 @@ defmodule Torchx.Backend do
   end
 
   @impl true
-  def svd({u_holder, s_holder, vt_holder}, tensor, _opts) do
+  def svd({u_holder, s_holder, vt_holder}, tensor, opts) do
     {u, s, vt} =
       tensor
       |> from_nx()
       |> Torchx.to_type(to_torch_type(u_holder.type))
-      |> Torchx.svd()
+      |> Torchx.svd(opts[:full_matrices?] == true)
 
     {to_nx(u, u_holder), to_nx(s, s_holder), to_nx(vt, vt_holder)}
   end

@@ -106,20 +106,6 @@ defmodule Nx.ComplexTest do
         end
       end
     end
-
-    test "random_uniform" do
-      assert %Nx.Tensor{shape: {3, 3}, type: {:c, 64}} =
-               t = Nx.random_uniform({3, 3}, type: {:c, 64})
-
-      assert Enum.all?(Nx.to_flat_list(t), &is_struct(&1, Complex))
-    end
-
-    test "random_normal" do
-      assert %Nx.Tensor{shape: {3, 3}, type: {:c, 64}} =
-               t = Nx.random_normal({3, 3}, type: {:c, 64})
-
-      assert Enum.all?(Nx.to_flat_list(t), &is_struct(&1, Complex))
-    end
   end
 
   describe "aggregate operations" do
@@ -194,8 +180,8 @@ defmodule Nx.ComplexTest do
       assert_all_close(Nx.multiply(@arg, @arg2), Complex.new(-25, 8))
     end
 
-    test "power" do
-      assert_all_close(Nx.power(@arg, @arg2), Complex.new(5.90369e-5, 5.26792e-5))
+    test "pow" do
+      assert_all_close(Nx.pow(@arg, @arg2), Complex.new(5.90369e-5, 5.26792e-5))
     end
 
     test "divide" do

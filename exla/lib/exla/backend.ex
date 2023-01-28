@@ -48,10 +48,6 @@ defmodule EXLA.Backend do
   end
 
   @impl true
-  def backend_copy(tensor, Nx.Tensor, backend_options) do
-    backend_copy(tensor, Nx.BinaryBackend, backend_options)
-  end
-
   def backend_copy(%T{data: %B{buffer: buffer}} = tensor, EXLA.Backend, backend_options) do
     {client, device_id} = client_and_device_id(backend_options)
 
@@ -238,7 +234,7 @@ defmodule EXLA.Backend do
   end
 
   binary_ops =
-    [:add, :subtract, :multiply, :power, :remainder, :divide, :atan2, :min, :max, :quotient] ++
+    [:add, :subtract, :multiply, :pow, :remainder, :divide, :atan2, :min, :max, :quotient] ++
       [:bitwise_and, :bitwise_or, :bitwise_xor, :left_shift, :right_shift] ++
       [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal] ++
       [:logical_and, :logical_or, :logical_xor]

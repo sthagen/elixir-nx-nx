@@ -1013,6 +1013,16 @@ defmodule NxTest do
         Nx.tensor([len3, len2])
       end)
     end
+
+    test "raises with tensor and different backends" do
+      assert_raise ArgumentError,
+                   "Nx.tensor/2 wants to allocate on backend ProcessBackend but it was given a tensor allocated on Nx.BinaryBackend",
+                   fn ->
+                     Nx.tensor(Nx.tensor([1, 2, 3], backend: Nx.BinaryBackend),
+                       backend: ProcessBackend
+                     )
+                   end
+    end
   end
 
   describe "from_binary/3" do
@@ -1840,159 +1850,6 @@ defmodule NxTest do
     end
   end
 
-  describe "random_normal/3" do
-    test "works with shape input" do
-      t = Nx.random_normal({3, 3}, 0.1, 10.0)
-      assert Nx.shape(t) == {3, 3}
-      assert Nx.type(t) == {:f, 32}
-    end
-
-    test "works with tensor input" do
-      t1 = Nx.iota({2})
-      t2 = Nx.random_normal(t1, 0.1, 10.0)
-      assert Nx.shape(t2) == {2}
-      assert Nx.type(t1) == {:s, 64}
-      assert Nx.type(t2) == {:f, 32}
-      assert t1 != t2
-    end
-
-    test "works with tensor mu/sigma" do
-      t = Nx.random_normal({3, 3}, Nx.tensor(1.0), Nx.tensor(1.0))
-      assert Nx.shape(t) == {3, 3}
-      assert Nx.type(t) == {:f, 32}
-    end
-
-    test "raises with non-float type" do
-      assert_raise(ArgumentError, "random_normal/3 expects float type, got: {:s, 32}", fn ->
-        Nx.random_normal(1, 0.1, 10.0, type: {:s, 32})
-      end)
-    end
-
-    test "raises with non-float sigma/mu" do
-      assert_raise(
-        ArgumentError,
-        "random_normal/3 expects mu and sigma to be float types, got: mu type: {:s, 64} and sigma type: {:s, 64}",
-        fn ->
-          Nx.random_normal({}, Nx.tensor(1), Nx.tensor(0))
-        end
-      )
-    end
-
-    test "raises with non-scalar shapes" do
-      assert_raise(
-        ArgumentError,
-        "random_normal/3 expects mu and sigma to be scalars got: mu shape: {2} and sigma shape: {2}",
-        fn ->
-          Nx.random_normal({}, Nx.tensor([1.0, 2.0]), Nx.tensor([1.0, 2.0]))
-        end
-      )
-    end
-
-    test "property" do
-      for _ <- 1..20 do
-        mean = 1.0 * :rand.uniform(1000)
-        std_dev = 1.0 * :rand.uniform(10)
-
-        n = 10000
-        t = Nx.random_normal({n}, mean, std_dev)
-        assert_all_close(mean, Nx.mean(t), atol: 1.0e-1, rtol: 1.0e-2)
-
-        calculated_std_dev =
-          t
-          |> Nx.subtract(mean)
-          |> Nx.LinAlg.norm()
-          |> Nx.divide(:math.sqrt(n))
-
-        assert_all_close(std_dev, calculated_std_dev, atol: 1.0e-1, rtol: 1.0e-2)
-      end
-    end
-  end
-
-  describe "random_uniform/3" do
-    test "works with shape input" do
-      t = Nx.random_uniform({3, 3}, 0.1, 10.0)
-      assert Nx.shape(t) == {3, 3}
-      assert Nx.type(t) == {:f, 32}
-    end
-
-    test "works with tensor input" do
-      t1 = Nx.iota({2})
-      t2 = Nx.random_uniform(t1, 0.1, 10.0)
-      assert Nx.shape(t2) == {2}
-      assert Nx.type(t1) == {:s, 64}
-      assert Nx.type(t2) == {:f, 32}
-      assert t1 != t2
-    end
-
-    test "works with tensor min/max" do
-      t = Nx.random_uniform({2}, Nx.tensor(-1.0), Nx.tensor(5.0))
-      assert Nx.shape(t) == {2}
-      assert Nx.type(t) == {:f, 32}
-    end
-
-    test "works with compatible types" do
-      t = Nx.random_uniform(1, 0, 10, type: {:s, 32})
-      assert Nx.shape(t) == {}
-      assert Nx.type(t) == {:s, 32}
-    end
-
-    test "raises for incompatible types" do
-      assert_raise(
-        ArgumentError,
-        "random_uniform/3 expects compatible types, got: {:s, 32} with range {:f, 32}",
-        fn ->
-          Nx.random_uniform(1, 0.1, 10.0, type: {:s, 32})
-        end
-      )
-    end
-
-    test "raises for incompatible shapes" do
-      assert_raise(
-        ArgumentError,
-        "random_uniform/3 expects min and max to be scalars, got: min shape: {3} and max shape: {3}",
-        fn ->
-          Nx.random_uniform(1, Nx.tensor([1.0, 2.0, 3.0]), Nx.tensor([1.0, 2.0, 3.0]))
-        end
-      )
-    end
-
-    test "property" do
-      for _ <- 1..20 do
-        min = 1.0 * :rand.uniform(10)
-        max = min + :rand.uniform(100)
-
-        expected_avg = (max + min) / 2
-
-        n = 10000
-        t = Nx.random_uniform({n}, min, max)
-        assert_all_close(expected_avg, Nx.mean(t), atol: 1.0, rtol: 1.0e-3)
-      end
-    end
-  end
-
-  describe "shuffle/2" do
-    test "returns tensor with the same elements" do
-      t = Nx.iota({4, 4})
-      shuffled = Nx.shuffle(t)
-
-      assert t |> Nx.flatten() |> Nx.sort() == shuffled |> Nx.flatten() |> Nx.sort()
-    end
-
-    test "given an axis swaps elements along that axis only" do
-      t = Nx.iota({4, 4})
-      shuffled = Nx.shuffle(t, axis: 1)
-
-      assert Nx.sort(t, axis: 1) == Nx.sort(shuffled, axis: 1)
-    end
-
-    test "deterministic shuffle along axis of size 1" do
-      t = Nx.iota({4, 1})
-      shuffled = Nx.shuffle(t, axis: 1)
-
-      assert t == shuffled
-    end
-  end
-
   describe "take_diagonal/2" do
     test "extracts valid diagonal given no offset" do
       diag =
@@ -2268,6 +2125,34 @@ defmodule NxTest do
     end
   end
 
+  describe "load_numpy/1" do
+    test "loads array" do
+      assert Nx.load_numpy!(File.read!("test/fixtures/numpy/no_dims_int64.npy")) ==
+               Nx.tensor(123, type: {:s, 64})
+
+      assert Nx.load_numpy!(File.read!("test/fixtures/numpy/1d_int64.npy")) ==
+               Nx.tensor([1, 2, 3, 4], type: {:s, 64})
+
+      assert Nx.load_numpy!(File.read!("test/fixtures/numpy/2d_float32.npy")) ==
+               Nx.tensor([[1, 2], [3, 4], [5, 6]], type: {:f, 32})
+    end
+  end
+
+  describe "load_numpy_archive!/1" do
+    test "loads archive" do
+      expected = [
+        {"foo", Nx.tensor([1, 2, 3], type: {:s, 64})},
+        {"bar", Nx.tensor([-1, 1], type: {:f, 32})},
+        {"a_longer_name", Nx.tensor([123], type: {:s, 64})}
+      ]
+
+      assert Nx.load_numpy_archive!(File.read!("test/fixtures/numpy/archive.npz")) == expected
+
+      assert Nx.load_numpy_archive!(File.read!("test/fixtures/numpy/archive_compressed.npz")) ==
+               expected
+    end
+  end
+
   describe "sigils" do
     test "evaluates to tensor" do
       import Nx
@@ -2475,6 +2360,29 @@ defmodule NxTest do
       right = Nx.iota({4}, backend: Nx.Defn.Expr) |> Nx.sin()
 
       assert inspect(left) == inspect(right)
+    end
+  end
+
+  describe "reflect/2" do
+    test "reflects over axes of size 1" do
+      assert Nx.tensor([1, 1, 1, 1]) == Nx.reflect(Nx.tensor([1]), padding_config: [{2, 1}])
+
+      assert Nx.tensor([[[1, 1, 1, 1]]]) ==
+               Nx.reflect(Nx.tensor([[[1]]]), padding_config: [{0, 0}, {0, 0}, {2, 1}])
+    end
+
+    test "semantic error on invalid padding config" do
+      assert_raise ArgumentError,
+                   "expected padding config for axis 0 to be of the format {left, right}, with left and right as non-negative integers, got: {0}",
+                   fn ->
+                     Nx.reflect(Nx.tensor([0]), padding_config: [{0}])
+                   end
+
+      assert_raise ArgumentError,
+                   "expected padding config for axis 2 to be of the format {left, right}, with left and right as non-negative integers, got: {-1, 0}",
+                   fn ->
+                     Nx.reflect(Nx.tensor([[[0]]]), padding_config: [{0, 0}, {0, 0}, {-1, 0}])
+                   end
     end
   end
 end

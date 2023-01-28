@@ -159,7 +159,7 @@ defmodule Nx.LinAlg do
   | -1           | `min(sum(abs(x), axes: [0]))`  | as below                          |
   | 2            | 2-norm                         | as below                          |
   | -2           | smallest singular value        | as below                          |
-  | other        | -                              | power(sum(power(abs(x), p)), 1/p) |
+  | other        | -                              | pow(sum(pow(abs(x), p)), 1/p) |
 
   ## Examples
 
@@ -376,9 +376,9 @@ defmodule Nx.LinAlg do
 
     abs_t
     |> Nx.divide(numerical_stability_coefficient)
-    |> Nx.power(ord)
+    |> Nx.pow(ord)
     |> Nx.sum(opts)
-    |> Nx.power(inv_ord)
+    |> Nx.pow(inv_ord)
     |> Nx.multiply(numerical_stability_coefficient)
   end
 
@@ -992,7 +992,7 @@ defmodule Nx.LinAlg do
       #Nx.Tensor<
         f32[2][2]
         [
-          [3.9924840927124023, -1.0052788257598877],
+          [3.9924843311309814, -1.0052789449691772],
           [-3.005120038986206, 1.0071183443069458]
         ]
       >
@@ -1052,19 +1052,17 @@ defmodule Nx.LinAlg do
         adjoint(tensor) / norm(tensor) ** 2
 
       _ ->
-        {u, s, vt} = Nx.LinAlg.svd(tensor)
+        {u, s, vt} = Nx.LinAlg.svd(tensor, full_matrices?: false)
         v = adjoint(vt)
         ut = adjoint(u)
 
         s_idx = Nx.abs(s) < opts[:eps]
         adjusted_s = Nx.select(s_idx, 1, s)
-        s_shape = {Nx.axis_size(v, -1), Nx.axis_size(ut, -2)}
 
-        s_inv_matrix =
-          Nx.broadcast(0, s_shape)
-          |> Nx.put_diagonal(Nx.select(s_idx, 0, 1 / adjusted_s))
+        s_inv_matrix = Nx.select(s_idx, 0, 1 / adjusted_s)
 
-        v |> Nx.dot(s_inv_matrix) |> Nx.dot(ut)
+        sut = Nx.new_axis(s_inv_matrix, -1) * ut
+        Nx.dot(v, sut)
     end
   end
 
@@ -1180,6 +1178,10 @@ defmodule Nx.LinAlg do
     * `:max_iter` - `integer`. Defaults to `100`
       Number of maximum iterations before stopping the decomposition
 
+    * `:full_matrices?` - `boolean`. Defaults to `true`
+      If `true`, `u` and `vt` are of shape (M, M), (N, N). Otherwise,
+      the shapes are (M, K) and (K, N), where K = min(M, N).
+
   Note not all options apply to all backends, as backends may have
   specific optimizations that render these mechanisms unnecessary.
 
@@ -1236,15 +1238,40 @@ defmodule Nx.LinAlg do
         ]
       >
 
+      iex> {u, s, vt} = Nx.LinAlg.svd(Nx.tensor([[2, 0, 0], [0, 3, 0], [0, 0, -1], [0, 0, 0]]), full_matrices?: false)
+      iex> u
+      #Nx.Tensor<
+        f32[4][3]
+        [
+          [0.0, 0.9999999403953552, 0.0],
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, -1.0],
+          [0.0, 0.0, 0.0]
+        ]
+      >
+      iex> s
+      #Nx.Tensor<
+        f32[3]
+        [3.0, 1.9999998807907104, 1.0]
+      >
+      iex> vt
+      #Nx.Tensor<
+        f32[3][3]
+        [
+          [0.0, 1.0, 0.0],
+          [1.0, 0.0, 0.0],
+          [0.0, 0.0, 1.0]
+        ]
+      >
   """
   def svd(tensor, opts \\ []) do
-    opts = keyword!(opts, max_iter: 100)
+    opts = keyword!(opts, max_iter: 100, full_matrices?: true)
     %T{type: type, shape: shape} = tensor = Nx.to_tensor(tensor)
 
     Nx.Shared.raise_complex_not_implemented_yet(type, "LinAlg.svd", 2)
 
     output_type = Nx.Type.to_floating(type)
-    {u_shape, s_shape, v_shape} = Nx.Shape.svd(shape)
+    {u_shape, s_shape, v_shape} = Nx.Shape.svd(shape, opts)
     rank = tuple_size(shape)
 
     output =
@@ -1758,5 +1785,76 @@ defmodule Nx.LinAlg do
     t
     |> Nx.take_diagonal(offset: offset)
     |> Nx.product(axes: [rank - 2])
+  end
+
+  @doc """
+  Return matrix rank of input M × N matrix using Singular Value Decomposition method.
+
+  Approximate the number of linearly independent rows by calculating the number
+  of singular values greater than `eps * max(singular values) * max(M, N)`.
+
+  This also appears in Numerical recipes in the discussion of SVD solutions for
+  linear least squares [1].
+
+  [1] W. H. Press, S. A. Teukolsky, W. T. Vetterling and B. P. Flannery,
+  “Numerical Recipes (3rd edition)”, Cambridge University Press, 2007, page 795.
+
+  ## Options
+
+    * `:eps` - Rounding error threshold used to assume values as 0. Defaults to `1.0e-7`
+
+  ## Examples
+
+      iex> Nx.LinAlg.matrix_rank(Nx.tensor([[1, 2], [3, 4]]))
+      #Nx.Tensor<
+        u64
+        2
+      >
+
+      iex> Nx.LinAlg.matrix_rank(Nx.tensor([[1, 1, 1, 1], [1, 1, 1, 1], [1, 2, 3, 4]]))
+      #Nx.Tensor<
+        u64
+        2
+      >
+
+      iex> Nx.LinAlg.matrix_rank(Nx.tensor([[1, 1, 1], [2, 2, 2], [8, 9, 10], [-2, 1, 5]]))
+      #Nx.Tensor<
+        u64
+        3
+      >
+
+  ## Error cases
+
+      iex> Nx.LinAlg.matrix_rank(Nx.tensor([1, 2, 3]))
+      ** (ArgumentError) tensor must have rank 2, got rank 1 with shape {3}
+  """
+  @doc from_backend: false
+  defn matrix_rank(a, opts \\ []) do
+    # TODO: support batching when SVD supports it too
+    opts = keyword!(opts, eps: 1.0e-7)
+    shape = Nx.shape(a)
+    size = Nx.rank(shape)
+
+    if size != 2 do
+      raise(
+        ArgumentError,
+        "tensor must have rank 2, got rank #{inspect(size)} with shape #{inspect(shape)}"
+      )
+    end
+
+    # Calculate max dimension
+    {row_dim, col_dim} = shape
+    max_dim = if row_dim > col_dim, do: row_dim, else: col_dim
+
+    # Calculate max singular value
+    {_u, s, _v} = Nx.LinAlg.svd(a)
+
+    s_max = Nx.reduce_max(s)
+
+    # Set tolerance values
+    tol = opts[:eps] * max_dim * s_max
+
+    # Calculate matrix rank
+    Nx.sum(s > tol)
   end
 end

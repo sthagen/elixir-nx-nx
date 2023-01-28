@@ -162,7 +162,7 @@ defmodule Nx.Defn.Kernel do
         parameter a s64
         parameter c s64
         b = tanh [ a ] f64
-        d = power [ c, 2 ] s64
+        d = pow [ c, 2 ] s64
         e = add [ b, d ] f64
       >
 
@@ -243,6 +243,7 @@ defmodule Nx.Defn.Kernel do
     Nx.Defn.Expr.metadata(expr, %{stop_grad: true, inspect: :stop_grad})
   end
 
+  @doc false
   @deprecated "custom_grad/2 is deprecated, use custom_grad/3 instead"
   def custom_grad(expr, fun) when is_function(fun, 2) do
     Nx.Defn.Expr.metadata(expr, %{custom_grad: fun, inspect: :custom_grad})
@@ -392,17 +393,17 @@ defmodule Nx.Defn.Kernel do
   @doc """
   Element-wise power operator.
 
-  It delegates to `Nx.power/2` (supports broadcasting).
+  It delegates to `Nx.pow/2` (supports broadcasting).
 
   ## Examples
 
-      defn power(a, b) do
+      defn pow(a, b) do
         a ** b
       end
 
   """
   def left ** right when Kernel.and(is_number(left), is_number(right)), do: Kernel.**(left, right)
-  def left ** right, do: Nx.power(left, right)
+  def left ** right, do: Nx.pow(left, right)
 
   @doc """
   Element-wise division operator.
@@ -1441,7 +1442,7 @@ defmodule Nx.Defn.Kernel do
           hook_token(token, another_value)
         end
 
-      attach_token(result)
+      attach_token(token, result)
 
   Instead, you must write:
 
@@ -1621,8 +1622,7 @@ defmodule Nx.Defn.Kernel do
   end
 
   @doc false
-  # TODO: Deprecate this in Nx v0.5
-  # @deprecated "Use deftransform/2 or deftransformp/2 from Nx.Defn instead"
+  @deprecated "Use deftransform/2 or deftransformp/2 from Nx.Defn instead"
   def transform(arg, fun) when is_function(fun, 1) do
     fun.(arg)
   end

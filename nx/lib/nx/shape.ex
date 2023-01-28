@@ -1044,7 +1044,7 @@ defmodule Nx.Shape do
       ** (ArgumentError) given axis (3) invalid for shape with rank 3
 
       iex> Nx.Shape.normalize_axis({4, 2, 5}, :z, [:batch, :x, :y])
-      ** (ArgumentError) key :z not found in tensor with names [:batch, :x, :y]
+      ** (ArgumentError) name :z not found in tensor with names [:batch, :x, :y]
 
       iex> Nx.Shape.normalize_axis({4, 2, 5}, nil, [:batch, nil, nil])
       ** (ArgumentError) axis name cannot be nil
@@ -1065,7 +1065,8 @@ defmodule Nx.Shape do
     if axis in names do
       Enum.with_index(names)[axis]
     else
-      raise ArgumentError, "key #{inspect(axis)} not found in tensor with names #{inspect(names)}"
+      raise ArgumentError,
+            "name #{inspect(axis)} not found in tensor with names #{inspect(names)}"
     end
   end
 
@@ -1890,22 +1891,33 @@ defmodule Nx.Shape do
         "tensor must have at least rank 2, got rank #{tuple_size(shape)} with shape #{inspect(shape)}"
       )
 
-  def svd(shape) when tuple_size(shape) > 1 do
+  def svd(shape, opts \\ [])
+
+  def svd(shape, opts) when tuple_size(shape) > 1 do
     rank = tuple_size(shape)
     {m, n} = {elem(shape, rank - 2), elem(shape, rank - 1)}
     {unchanged_shape, _} = Tuple.to_list(shape) |> Enum.split(-2)
+    k = min(m, n)
 
-    [
-      [unchanged_shape, [m, m]],
-      [unchanged_shape, [min(m, n)]],
-      [unchanged_shape, [n, n]]
-    ]
+    if opts[:full_matrices?] do
+      [
+        [unchanged_shape, [m, m]],
+        [unchanged_shape, [k]],
+        [unchanged_shape, [n, n]]
+      ]
+    else
+      [
+        [unchanged_shape, [m, k]],
+        [unchanged_shape, [k]],
+        [unchanged_shape, [k, n]]
+      ]
+    end
     |> Enum.map(&List.flatten/1)
     |> Enum.map(&List.to_tuple/1)
     |> List.to_tuple()
   end
 
-  def svd(shape),
+  def svd(shape, _opts),
     do:
       raise(
         ArgumentError,
