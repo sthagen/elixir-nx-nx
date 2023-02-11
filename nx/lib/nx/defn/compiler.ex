@@ -82,6 +82,13 @@ defmodule Nx.Defn.Compiler do
                  acc: Nx.Container.t(),
                  vars: [Nx.Container.t()]
 
+  @doc """
+  Receives a keyword list of compiler options and
+  returns a list of compiler options, each to run
+  on a separate partition/device.
+  """
+  @callback __partitions_options__(keyword) :: [keyword]
+
   # Modules allowed in defn
   @allowed_modules [Nx.Constants, Nx.Defn, Nx.Defn.Kernel, Nx.LinAlg, Nx.Type]
 
@@ -106,6 +113,15 @@ defmodule Nx.Defn.Compiler do
   """
   def current() do
     Process.get(Nx.Defn.Compiler)
+  end
+
+  @doc """
+  Returns if we are inside `defn` at _compilation time_.
+
+  This would be invoked inside a macro that has specific `defn` logic.
+  """
+  def defn?() do
+    Process.get(Nx.Defn, false)
   end
 
   ## JIT/Stream

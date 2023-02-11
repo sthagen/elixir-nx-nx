@@ -142,23 +142,10 @@ defmodule Nx.Shared do
           elem_size = div(unquote(size), 2)
           <<x::float-native-size(elem_size), 0::float-native-size(elem_size)>>
 
-        %Complex{re: re, im: im} when is_number(re) and is_number(im) ->
-          elem_size = div(unquote(size), 2)
-          <<re::float-native-size(elem_size), im::float-native-size(elem_size)>>
+        %Complex{re: re, im: im} ->
+          Nx.Shared.write_complex(re, im, div(unquote(size), 2))
 
-        %Complex{re: re, im: im} when is_number(re) and not is_number(im) ->
-          elem_size = div(unquote(size), 2)
-          <<re::float-native-size(elem_size)>> <> write_non_finite(im, elem_size)
-
-        %Complex{re: re, im: im} when not is_number(re) and is_number(im) ->
-          elem_size = div(unquote(size), 2)
-          write_non_finite(re, elem_size) <> <<im::float-native-size(elem_size)>>
-
-        %Complex{re: re, im: im} when not is_number(re) and not is_number(im) ->
-          elem_size = div(unquote(size), 2)
-          write_non_finite(re, elem_size) <> write_non_finite(im, elem_size)
-
-        x when x in [:infinity, :neg_infinity, :nan] ->
+        x ->
           elem_size = div(unquote(size), 2)
           Nx.Shared.write_non_finite(x, elem_size) <> <<0::float-native-size(elem_size)>>
       end :: binary
@@ -239,6 +226,25 @@ defmodule Nx.Shared do
   end
 
   @doc """
+  Complex write callback.
+  """
+  def write_complex(re, im, size) when is_number(re) and is_number(im) do
+    <<re::float-native-size(size), im::float-native-size(size)>>
+  end
+
+  def write_complex(re, im, size) when is_number(re) and not is_number(im) do
+    <<re::float-native-size(size)>> <> write_non_finite(im, size)
+  end
+
+  def write_complex(re, im, size) when not is_number(re) and is_number(im) do
+    write_non_finite(re, size) <> <<im::float-native-size(size)>>
+  end
+
+  def write_complex(re, im, size) when not is_number(re) and not is_number(im) do
+    write_non_finite(re, size) <> write_non_finite(im, size)
+  end
+
+  @doc """
   Non-finite read callback.
   """
   def read_non_finite(data, 16) do
@@ -315,14 +321,14 @@ defmodule Nx.Shared do
            |> Complex.subtract(1)
          end, "$$expm1(z) = e^z - 1$$"},
       log:
-        {"natural log", quote(do: Complex.ln(var!(x))),
+        {"natural log", quote(do: Complex.log(var!(x))),
          ~S"""
          $$log(z) = ln(z),\quad \text{if z} \in \Reals$$
 
          $$log(z) = ln(r) + i\theta,\quad\text{if }z = re^{i\theta} \in \Complex$$
          """},
       log1p:
-        {"natural log plus one", quote(do: Complex.ln(Complex.add(var!(x), 1))),
+        {"natural log plus one", quote(do: Complex.log(Complex.add(var!(x), 1))),
          "$$log1p(z) = log(z + 1)$$"},
       sigmoid:
         {"sigmoid",
