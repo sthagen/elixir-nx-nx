@@ -151,7 +151,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.reshape({2, 2, 2}, {:auto, 4})
       {2, 4}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.reshape({2, 2, 2}, {2, 3})
       ** (ArgumentError) cannot reshape, current shape {2, 2, 2} is not compatible with new shape {2, 3}
@@ -219,7 +219,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.broadcast!({2}, {2, 3}, [0])
       :ok
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.broadcast!({4, 2, 2}, {1, 1}, [0, 1, 2])
       ** (ArgumentError) cannot broadcast tensor of dimensions {4, 2, 2} to {1, 1} with axes [0, 1, 2]
@@ -290,7 +290,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.binary_broadcast({3, 1}, [:x, :y], {15, 3, 5}, [:batch, :x, nil])
       {{15, 3, 5}, [:batch, :x, :y]}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.binary_broadcast({4, 2, 5}, [nil, nil, nil], {3, 2, 5}, [:batch, :x, :y])
       ** (ArgumentError) cannot broadcast tensor of dimensions {4, 2, 5} to {3, 2, 5}
@@ -427,7 +427,7 @@ defmodule Nx.Shape do
     iex> Nx.Shape.transpose({4, 8, 2, 1}, [1, 0, 3, 2], [:batch, :channels, :height, :width])
     {{8, 4, 1, 2}, [:channels, :batch, :width, :height]}
 
-  ### Error cases
+  ## Error cases
 
     iex> Nx.Shape.transpose({4, 8, 2, 1}, [0, 1, 2], [:batch, nil, nil, nil])
     ** (ArgumentError) expected length of permutation (3) to match rank of shape (4)
@@ -518,7 +518,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.to_padding_config({12, 12}, {2, 2}, :same)
       [{0, 1}, {0, 1}]
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.to_padding_config({2, 3, 2}, {2, 3, 2}, :foo)
       ** (ArgumentError) invalid padding mode specified, padding must be one of :valid, :same, or a padding configuration, got: :foo
@@ -571,7 +571,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.flatten({1, 2, 3}, [nil, nil, nil], [])
       {{1, 2, 3}, [nil, nil, nil]}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.flatten({1, 2, 3}, [:batch, nil, nil], [0, 2])
       ** (ArgumentError) flatten axes must be consecutive
@@ -830,7 +830,7 @@ defmodule Nx.Shape do
     iex> Nx.Shape.pool({3, 2, 3}, {2, 1, 1}, [1, 2, 1], :same, [1, 1, 1])
     {{3, 1, 3}, [{0, 1}, {0, 0}, {0, 0}]}
 
-  ### Error cases
+  ## Error cases
 
     iex> Nx.Shape.pool({1, 2, 3}, {2, 1, 1}, [1, 1, 1], :valid, [1, 1, 1])
     ** (ArgumentError) window dimensions would result in empty tensor which is not currently supported in Nx, please open an issue if you'd like this behavior to change
@@ -936,7 +936,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.squeeze({1, 2}, [0], [:batch, :x])
       {{2}, [:x]}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.squeeze({2, 2, 1}, [1], [:batch, :x, :y])
       ** (ArgumentError) cannot squeeze dimensions whose sizes are not 1, got 2 for dimension 1
@@ -980,7 +980,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.pad({2, 3}, [{0, 0, 1}, {0, 0, 1}])
       {3, 5}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.pad({2, 2, 3}, [{0, 1, 0}, {1, 2, 0}])
       ** (ArgumentError) invalid padding configuration, rank of padding configuration and shape must match
@@ -1035,7 +1035,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.normalize_axis({4, 2, 1, 4}, :z, [:batch, :x, :y, :z])
       3
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.normalize_axis({4, 2, 5}, -4, [:batch, :x, :y])
       ** (ArgumentError) given axis (-4) invalid for shape with rank 3
@@ -1088,7 +1088,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.normalize_axes({2, 3, 4}, [:batch, 1], [:batch, :x])
       [0, 1]
 
-  ### Error Cases
+  ## Error cases
 
       iex> Nx.Shape.normalize_axes({2, 3, 4}, [1, 1], [nil, nil, nil])
       ** (ArgumentError) axes [1, 1] must be unique integers between 0 and 2
@@ -1173,7 +1173,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.slice({2, 15, 30}, [1, 4, 25], [1, 1, 10], [1, 1, 1])
       {[1, 4, 20], {1, 1, 10}}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.slice({2, 15, 30}, [1, 4, 10], [3, 1, 1], [1, 1, 1])
       ** (ArgumentError) length at axis 0 must be less than axis size of 2, got: 3
@@ -1293,7 +1293,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.take({2, 3, 4}, [:x, :y, :z], {10, 20}, [:a, :b], 1)
       {{2, 10, 20, 4}, [:x, :a, :b, :z]}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.take({2, 3}, [nil, :data], {10}, [:reordered], 1)
       ** (ArgumentError) cannot merge name :data on axis 1 with name :reordered on axis 0
@@ -1495,7 +1495,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.take_along_axis({2, 3, 4}, {10, 3, 4}, 0)
       {10, 3, 4}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.take_along_axis({2, 3, 4}, {3, 10, 4}, 1)
       ** (ArgumentError) non-indexing dimensions must match. Expected {2, *, 4}, got: {3, 10, 4}
@@ -1510,7 +1510,7 @@ defmodule Nx.Shape do
 
     if tuple_size(shape) != tuple_size(indices_shape) do
       raise ArgumentError,
-            "shapes must have the same number of dimensions. Expected #{take_along_axis_shape_template(shape, axis)}, got: #{inspect(indices_shape)}"
+            "shapes must have the same number of dimensions. Expected #{shape_template_on_axis(shape, axis)}, got: #{inspect(indices_shape)}"
     end
 
     shape_list = Tuple.to_list(shape)
@@ -1525,14 +1525,14 @@ defmodule Nx.Shape do
       {input_length, output_length}, _axis ->
         unless input_length == output_length do
           raise ArgumentError,
-                "non-indexing dimensions must match. Expected #{take_along_axis_shape_template(shape, axis)}, got: #{inspect(indices_shape)}"
+                "non-indexing dimensions must match. Expected #{shape_template_on_axis(shape, axis)}, got: #{inspect(indices_shape)}"
         end
     end)
 
     indices_shape
   end
 
-  defp take_along_axis_shape_template(shape, axis) do
+  defp shape_template_on_axis(shape, axis) do
     shape_list = Tuple.to_list(shape)
 
     shape_template =
@@ -1566,7 +1566,7 @@ defmodule Nx.Shape do
       iex> Nx.Shape.gather({2, 2, 2}, {3})
       {{}, []}
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.Shape.gather({2, 3}, {})
       ** (ArgumentError) expected indices rank to be at least 1, got: 0
@@ -1608,7 +1608,9 @@ defmodule Nx.Shape do
     {concat_dims(shapes, axis), names}
   end
 
-  defp concat_dims([s1 | shapes], axis) do
+  defp concat_dims([s1 | shapes] = all_shapes, axis) do
+    assert_non_concat_dims_equal(all_shapes, axis)
+
     s1 = Tuple.to_list(s1)
 
     shapes
@@ -1634,6 +1636,19 @@ defmodule Nx.Shape do
                   " while concatenating on axis #{axis}"
       end
     end)
+  end
+
+  defp assert_non_concat_dims_equal([], _axis), do: :ok
+
+  defp assert_non_concat_dims_equal([s1 | shapes], axis) do
+    s1_size = tuple_size(s1)
+    template = Tuple.delete_at(s1, axis)
+
+    for shape <- shapes,
+        tuple_size(shape) != s1_size or Tuple.delete_at(shape, axis) != template do
+      raise ArgumentError,
+            "expected all shapes to match #{shape_template_on_axis(s1, axis)}, got unmatching shape: #{inspect(shape)}"
+    end
   end
 
   @doc """
@@ -2071,6 +2086,50 @@ defmodule Nx.Shape do
   end
 
   def fft(shape) when is_tuple(shape), do: shape
+
+  @doc """
+  Output shape after a top_k operation.
+
+  ## Examples
+
+      iex> Nx.Shape.top_k({3, 3, 3}, [:a, :b, :c], 2)
+      {{3, 3, 2}, [:a, :b, :c]}
+
+      iex> Nx.Shape.top_k({2, 3, 1}, [:a, :b, :c], 1)
+      {{2, 3, 1}, [:a, :b, :c]}
+
+  ## Error cases
+      
+      iex> Nx.Shape.top_k({}, [], 1)
+      ** (ArgumentError) top_k input must have at least rank 1
+
+      iex> Nx.Shape.top_k({2, 3, 1}, [:a, :b, :c], 2)
+      ** (ArgumentError) top_k input last axis size must be greater than or equal to k, got size=1 and k=2
+
+      iex> Nx.Shape.top_k({2, 3, 1}, [:a, :b, :c], -1)
+      ** (ArgumentError) top_k k must be an integer greater than or equal to 1, got k=-1
+  """
+  def top_k(shape, names, k) when is_integer(k) and k >= 1 do
+    case shape do
+      {} ->
+        raise ArgumentError, "top_k input must have at least rank 1"
+
+      tuple ->
+        rank = tuple_size(tuple)
+        last_axis = elem(tuple, rank - 1)
+
+        if last_axis < k do
+          raise ArgumentError,
+                "top_k input last axis size must be greater than or" <>
+                  " equal to k, got size=#{last_axis} and k=#{k}"
+        end
+
+        {put_elem(tuple, rank - 1, k), names}
+    end
+  end
+
+  def top_k(_shape, _names, k),
+    do: raise(ArgumentError, "top_k k must be an integer greater than or equal to 1, got k=#{k}")
 
   @doc """
   Merges names, raising on mismatch.

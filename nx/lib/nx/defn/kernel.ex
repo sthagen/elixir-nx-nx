@@ -105,6 +105,11 @@ defmodule Nx.Defn.Kernel do
         true -> b - c
       end
 
+  When a `defn` is invoked, all `cond` clauses are traversed
+  and expanded in order to build their expressions. This means that,
+  **if you attempt to raise in any clause, then it will always raise**.
+  You can only `raise` in limited situations inside `defn`, see
+  `raise/2` for more information.
   """
   defmacro cond(opts), do: special_form!([opts])
 
@@ -149,7 +154,7 @@ defmodule Nx.Defn.Kernel do
 
   It returns the given expressions.
 
-  ### Examples
+  ## Examples
 
       defn tanh_grad(t) do
         grad(t, &Nx.tanh/1) |> print_expr()
@@ -307,6 +312,29 @@ defmodule Nx.Defn.Kernel do
   @doc false
   def __unary_minus__(tensor) when is_number(tensor), do: Kernel.-(tensor)
   def __unary_minus__(tensor), do: Nx.negate(tensor)
+
+  @doc """
+  Creates the full-slice range `0..-1//1`.
+
+  This function returns a range with the following properties:
+
+    * When enumerated, it is empty
+
+    * When used as a `slice`, it returns the sliced element as is
+
+  ## Examples
+
+      iex> t = Nx.tensor([1, 2, 3])
+      iex> t[..]
+      #Nx.Tensor<
+        s64[3]
+        [1, 2, 3]
+      >
+
+  """
+  def (..) do
+    Range.new(0, Kernel.-(1), 1)
+  end
 
   @doc """
   Builds a range.
@@ -974,6 +1002,12 @@ defmodule Nx.Defn.Kernel do
   In case else is not given, it is assumed to be 0 with the
   same as the do clause. If you want to nest multiple conditionals,
   see `cond/1` instead.
+
+  When a `defn` is invoked, both `do`/`else` clauses are traversed
+  and expanded in order to build their expressions. This means that,
+  **if you attempt to raise in any clause, then it will always raise**.
+  You can only `raise` in limited situations inside `defn`, see
+  `raise/2` for more information.
   """
   defmacro if(pred, do_else)
 
@@ -1239,7 +1273,7 @@ defmodule Nx.Defn.Kernel do
   This is most commonly used in pipelines, allowing you
   to pipe a value to a function outside of its first argument.
 
-  ### Examples
+  ## Examples
 
       a
       |> Nx.add(b)
@@ -1581,7 +1615,7 @@ defmodule Nx.Defn.Kernel do
 
   In this case, both `a` and `b` are tensors and we are comparing their values.
   However, their values are unknown, which means we need to convert the whole
-  `if` to a numerical expression and run it on the device. However, once we
+  `if` to a numerical expression and run it on the device. Therefore, once we
   convert the `else` branch, it will execute `raise/2`, making it so the code
   above always raises!
 

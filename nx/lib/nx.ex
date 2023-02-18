@@ -897,7 +897,7 @@ defmodule Nx do
   operations and the data is not yet available.
 
   For convenience, this function accepts tensors and any container
-  (such as maps and tuples as defined by the `Nx.Container` protocol)
+  (such as maps and tuples as defined by the `Nx.LazyContainer` protocol)
   and recursively converts all tensors to templates.
 
   ## Examples
@@ -1789,6 +1789,65 @@ defmodule Nx do
     end
   end
 
+  @doc """
+  Converts the tensor into a list reflecting its structure.
+
+  Negative infinity (-Inf), infinity (Inf), and "not a number" (NaN)
+  will be represented by the atoms `:neg_infinity`, `:infinity`, and
+  `:nan` respectively.
+
+  It raises if a scalar tensor is given, use `to_number/1` instead.
+
+  Note: This function cannot be used in `defn`.
+
+  ## Examples
+
+      iex> Nx.iota({2, 3}) |> Nx.to_list()
+      [
+        [0, 1, 2],
+        [3, 4, 5]
+      ]
+
+      iex> Nx.tensor(123) |> Nx.to_list()
+      ** (ArgumentError) cannot convert a scalar tensor to a list, got: #Nx.Tensor<
+        s64
+        123
+      >
+  """
+  @doc type: :conversion
+  def to_list(tensor) do
+    %{type: type, shape: shape} = tensor = to_tensor(tensor)
+
+    if shape == {} do
+      raise ArgumentError, "cannot convert a scalar tensor to a list, got: #{inspect(tensor)}"
+    end
+
+    binary = to_binary(tensor, [])
+    dims = Tuple.to_list(shape)
+    {list, ""} = chunk(dims, binary, type)
+    list
+  end
+
+  defp chunk([], data, type) do
+    match_types [type] do
+      <<match!(head, 0), tail::binary>> = data
+      {read!(head, 0), tail}
+    end
+  end
+
+  defp chunk([dim | dims], data, type) do
+    chunk_each(dim, data, [], dims, type)
+  end
+
+  defp chunk_each(0, data, acc, _dims, _type) do
+    {Enum.reverse(acc), data}
+  end
+
+  defp chunk_each(dim, data, acc, dims, type) do
+    {entry, rest} = chunk(dims, data, type)
+    chunk_each(dim - 1, rest, [entry | acc], dims, type)
+  end
+
   @doc false
   @deprecated "Use to_batched/3 instead"
   def to_batched_list(tensor, batch_size, opts \\ []) do
@@ -2117,7 +2176,7 @@ defmodule Nx do
         [0, 0, 0]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.bitcast(Nx.tensor([0, 1, 2], names: [:data], type: :s16), :f32)
       ** (ArgumentError) input type width must match new type width, got input type {:s, 16} and output type {:f, 32}
@@ -2449,7 +2508,7 @@ defmodule Nx do
         ]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.tile(Nx.tensor([1,2]), 1.0)
       ** (ArgumentError) repetitions must be a list of integers, got: 1.0
@@ -2603,7 +2662,7 @@ defmodule Nx do
         [1, 2]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.squeeze(Nx.tensor([[1, 2, 3], [4, 5, 6]]), axes: [1])
       ** (ArgumentError) cannot squeeze dimensions whose sizes are not 1, got 3 for dimension 1
@@ -3084,7 +3143,7 @@ defmodule Nx do
 
   If a shape as a tuple is given, it returns the shape itself.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.shape(Nx.tensor(1))
       {}
@@ -3117,7 +3176,7 @@ defmodule Nx do
   If a tuple is given as a shape, it computes the rank
   of the given tuple.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.rank(Nx.tensor(1))
       0
@@ -3142,7 +3201,7 @@ defmodule Nx do
   It accepts either an atom as the name or an integer as the axis.
   It raises if the axis/name does not exist.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.axis_size(Nx.iota({100, 10, 20}), 0)
       100
@@ -3161,7 +3220,7 @@ defmodule Nx do
   @doc """
   Returns the index of the given axis in the tensor.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.axis_index(Nx.iota({100, 10, 20}), 0)
       0
@@ -3172,7 +3231,7 @@ defmodule Nx do
       iex> Nx.axis_index(Nx.iota({100, 10, 20}, names: [:batch, :x, :y]), :x)
       1
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.axis_index(Nx.iota({100, 10, 20}), 3)
       ** (ArgumentError) given axis (3) invalid for shape with rank 3
@@ -3192,7 +3251,7 @@ defmodule Nx do
 
   If a tuple is given, it returns the number of elements in a tensor with that shape.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.size(Nx.tensor([[1, 2, 3], [4, 5, 6]]))
       6
@@ -3212,7 +3271,7 @@ defmodule Nx do
   Returns the byte size of the data in the tensor
   computed from its shape and type.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.byte_size(Nx.tensor([[1, 2, 3], [4, 5, 6]]))
       48
@@ -3235,7 +3294,7 @@ defmodule Nx do
 
   If a shape is given, it returns the axes for the given shape.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.axes(Nx.tensor([[1, 2, 3], [4, 5, 6]]))
       [0, 1]
@@ -3253,7 +3312,7 @@ defmodule Nx do
   @doc """
   Returns all of the names in a tensor.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.names(Nx.tensor([[1, 2, 3], [4, 5, 6]], names: [:batch, :data]))
       [:batch, :data]
@@ -3399,7 +3458,7 @@ defmodule Nx do
   this function.
   * This function cannot be used in `defn`.
 
-  ### Examples
+  ## Examples
 
     iex> Nx.backend_copy(Nx.tensor([[1, 2, 3], [4, 5, 6]]))
     #Nx.Tensor<
@@ -4380,7 +4439,7 @@ defmodule Nx do
         [0, 0, 0, 1]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.bitwise_and(Nx.tensor([0, 0, 1, 1]), 1.0)
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -4433,7 +4492,7 @@ defmodule Nx do
         [0, 1, 1, 1]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.bitwise_or(Nx.tensor([0, 0, 1, 1]), 1.0)
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -4483,7 +4542,7 @@ defmodule Nx do
         [0, 1, 1, 0]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.bitwise_xor(Nx.tensor([0, 0, 1, 1]), 1.0)
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -4536,7 +4595,7 @@ defmodule Nx do
         [2, 4, -8, -16]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.left_shift(Nx.tensor([0, 0, 1, 1]), 1.0)
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -4594,7 +4653,7 @@ defmodule Nx do
         [8, 8, -8, -8]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.right_shift(Nx.tensor([0, 0, 1, 1]), 1.0)
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -5410,7 +5469,7 @@ defmodule Nx do
 
   See also: `indexed_add/3`, `gather/2`, `take/3`, `take_along_axis/3`
 
-  ### Examples
+  ## Examples
 
       iex> t = Nx.iota({1, 2, 3})
       #Nx.Tensor<
@@ -5456,7 +5515,7 @@ defmodule Nx do
         [3]
       >
 
-  ### Error cases
+  ## Error cases
       iex> Nx.indexed_add(Nx.tensor([[1], [2]]), Nx.tensor([[[1, 2, 3]]]), Nx.tensor([0]))
       ** (ArgumentError) indices must be a rank 2 tensor, got: 3
 
@@ -5485,7 +5544,7 @@ defmodule Nx do
 
   See also: `indexed_add/3`, `put_slice/3`.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.indexed_put(Nx.tensor([0, 0, 0]), Nx.tensor([[1], [2]]), Nx.tensor([2, 4]))
       #Nx.Tensor<
@@ -5543,7 +5602,7 @@ defmodule Nx do
         [3]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.indexed_put(Nx.tensor([[1], [2]]), Nx.tensor([[[1, 2, 3]]]), Nx.tensor([0]))
       ** (ArgumentError) indices must be a rank 2 tensor, got: 3
@@ -5950,7 +6009,7 @@ defmodule Nx do
 
   Does not accept complex tensors as inputs.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.complex(Nx.tensor(1), Nx.tensor(2))
       #Nx.Tensor<
@@ -6003,7 +6062,7 @@ defmodule Nx do
         [255, 254, 1, 0]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.bitwise_not(Nx.tensor([0.0, 1.0]))
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -6044,7 +6103,7 @@ defmodule Nx do
         [0, 1, 6, 7, 8, 2, 1]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.population_count(Nx.tensor([0.0, 1.0]))
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -6109,7 +6168,7 @@ defmodule Nx do
         [8, 7, 6, 5, 4, 3, 2, 1, 0]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.count_leading_zeros(Nx.tensor([0.0, 1.0]))
       ** (ArgumentError) bitwise operators expect integer tensors as inputs and outputs an integer tensor, got: {:f, 32}
@@ -8718,7 +8777,7 @@ defmodule Nx do
 
   The initial value must be a number or a scalar shaped tensor.
 
-  ### Examples
+  ## Examples
 
       iex> init_value = Nx.Constants.min_finite(:s64)
       iex> t = Nx.tensor([[1, 2, 3, 4], [4, 5, 6, 7], [7, 8, 9, 10], [11, 12, 13, 14]])
@@ -8833,7 +8892,7 @@ defmodule Nx do
 
   Inside `defn`, consider using `Nx.Defn.Kernel.while/4` instead.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.map(Nx.tensor([[1, 2, 3], [4, 5, 6]]), fn x -> Nx.add(x, 1) end)
       #Nx.Tensor<
@@ -9045,7 +9104,7 @@ defmodule Nx do
         ]
       >
 
-  ### Error Cases
+  ## Error cases
 
       iex> Nx.dot(Nx.tensor([1, 2, 3]), Nx.tensor([1, 2]))
       ** (ArgumentError) dot/zip expects shapes to be compatible, dimension 0 of left-side (3) does not equal dimension 0 of right-side (2)
@@ -9232,7 +9291,7 @@ defmodule Nx do
         ]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> u = Nx.tensor([[[1, 1]], [[2, 2]]])
       iex> v = Nx.tensor([[[3], [3]], [[4], [4]]])
@@ -9489,7 +9548,7 @@ defmodule Nx do
   dimensions. Dimensions must be unique, but they do not
   have to be successive.
 
-  ### Examples
+  ## Examples
 
       iex> Nx.reverse(Nx.tensor([1, 2, 3]))
       #Nx.Tensor<
@@ -9834,7 +9893,7 @@ defmodule Nx do
   You can pass a tensor to `min` or `max` as long
   as the tensor has a scalar shape.
 
-  ### Examples
+  ## Examples
 
       iex> t = Nx.tensor([[1, 2, 3], [4, 5, 6]], names: [:x, :y])
       iex> Nx.clip(t, 2, 4)
@@ -10387,7 +10446,7 @@ defmodule Nx do
         ]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.take(Nx.tensor([[1, 2], [3, 4]]), Nx.tensor([1, 0, 1], type: :f32))
       ** (ArgumentError) indices must be an integer tensor, got {:f, 32}
@@ -10505,7 +10564,7 @@ defmodule Nx do
         ]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> tensor = Nx.iota({3, 3})
       iex> idx = Nx.tensor([[2.0], [1.0], [2.0]], type: :f32)
@@ -10562,7 +10621,7 @@ defmodule Nx do
         [1, 12, 112]
       >
 
-  ### Error cases
+  ## Error cases
 
       iex> Nx.gather(Nx.tensor([[1, 2], [3, 4]]), Nx.tensor([[0, 0]], type: :f32))
       ** (ArgumentError) indices must be an integer tensor, got {:f, 32}
@@ -10584,18 +10643,22 @@ defmodule Nx do
   @doc """
   Concatenates tensors along the given axis.
 
-  If no axis is provided, defaults to 0.
+  Tensors can be a tuple or any `Nx.Container` or `Nx.LazyContainer`.
+  This means you can easily concatenate all columns in a datafrane
+  and other data structures. For convenience, this function also allows
+  a list of tensors to be given, which may be common outside of `defn`.
 
-  All tensors must have the same rank and all of their
-  dimension sizes but the concatenated dimension must match.
-
-  If tensors are named, the names must be able to be merged.
+  If no axis is provided, defaults to 0. All tensors must have the same
+  rank and all of their axis except the concatenated one must match.
 
   If tensors with mixed types are given, the types will
   be merged to a higher type and all of the tensors will
   be cast to the higher type before concatenating.
+  If tensors are named, the names must match.
 
-  ### Examples
+  ## Examples
+
+  Giving a single tensor is a no-op:
 
       iex> Nx.concatenate([Nx.tensor([1, 2, 3])])
       #Nx.Tensor<
@@ -10603,11 +10666,15 @@ defmodule Nx do
         [1, 2, 3]
       >
 
+  Multiple tensors are concatented:
+
       iex> Nx.concatenate([Nx.tensor([1, 2, 3]), Nx.tensor([4, 5, 6])])
       #Nx.Tensor<
         s64[6]
         [1, 2, 3, 4, 5, 6]
       >
+
+  Types are merged and names must match:
 
       iex> t1 = Nx.iota({2, 2, 2}, names: [:x, :y, :z], type: :f32)
       iex> t2 = Nx.iota({1, 2, 2}, names: [:x, :y, :z], type: :u8)
@@ -10635,6 +10702,8 @@ defmodule Nx do
         ]
       >
 
+  And you can pick a different axis:
+
       iex> t1 = Nx.iota({1, 3, 2}, names: [:x, :y, :z])
       iex> t2 = Nx.iota({1, 1, 2}, names: [:x, :y, :z])
       iex> t3 = Nx.iota({1, 2, 2}, names: [:x, :y, :z])
@@ -10653,44 +10722,44 @@ defmodule Nx do
         ]
       >
 
-      iex> t1 = Nx.iota({2, 1, 4}, names: [:x, :y, :z])
-      iex> t2 = Nx.iota({2, 1, 1}, names: [:x, :y, :z])
-      iex> t3 = Nx.iota({2, 1, 3}, names: [:x, :y, :z])
-      iex> Nx.concatenate([t1, t2, t3], axis: :z)
+  You can also pass any container (or lazy container) as first argument
+  and they are recursively traversed:
+
+      iex> Nx.concatenate({Nx.tensor([1, 2]), {Nx.tensor([3, 4]), Nx.tensor([5, 6])}})
       #Nx.Tensor<
-        s64[x: 2][y: 1][z: 8]
-        [
-          [
-            [0, 1, 2, 3, 0, 0, 1, 2]
-          ],
-          [
-            [4, 5, 6, 7, 1, 3, 4, 5]
-          ]
-        ]
+        s64[6]
+        [1, 2, 3, 4, 5, 6]
       >
 
-      iex> t1 = Nx.iota({2, 1, 4}, names: [:x, :y, :z])
-      iex> Nx.concatenate([t1], axis: :z)
-      #Nx.Tensor<
-        s64[x: 2][y: 1][z: 4]
-        [
-          [
-            [0, 1, 2, 3]
-          ],
-          [
-            [4, 5, 6, 7]
-          ]
-        ]
-      >
+  ## Error cases
+
+  Shapes must have the same rank and match on the non-concatenating axis.
+
+  For example, the tensors below work if we concatenate on axis 1, but not on axis 0:
+
+      iex> t1 = Nx.iota({1, 2, 3})
+      iex> t2 = Nx.iota({1, 1, 3})
+      iex> result = Nx.concatenate([t1, t2], axis: 1)
+      iex> Nx.shape(result)
+      {1, 3, 3}
+      iex> Nx.concatenate([t1, t2], axis: 0)
+      ** (ArgumentError) expected all shapes to match {*, 2, 3}, got unmatching shape: {1, 1, 3}
+
+  If the ranks are different, it doesn't work, regardless of the axis choice:
+
+      iex> t1 = Nx.iota({1, 2, 3})
+      iex> t2 = Nx.iota({1, 1})
+      iex> Nx.concatenate([t1, t2])
+      ** (ArgumentError) expected all shapes to match {*, 2, 3}, got unmatching shape: {1, 1}
   """
   @doc type: :ndim
-  def concatenate(tensors, opts \\ []) when is_list(tensors) do
+  def concatenate(tensors, opts \\ []) do
     opts = keyword!(opts, axis: 0)
     axis = opts[:axis]
 
-    case tensors do
+    case flatten_list_or_container(tensors) do
       [] ->
-        raise ArgumentError, "empty list passed to concatenate"
+        raise ArgumentError, "no tensors were given to concatenate"
 
       [t] ->
         t
@@ -10700,42 +10769,78 @@ defmodule Nx do
           tensors
           |> Enum.map(fn t ->
             %T{type: type, shape: shape, names: names} = t = to_tensor(t)
-
             {t, type, shape, names}
           end)
           |> unzip4()
 
         axis = Nx.Shape.normalize_axis(s1, axis, n1)
         {output_shape, output_names} = Nx.Shape.concatenate(shapes, names, axis)
-
-        output_type =
-          rest
-          |> Enum.reduce(type1, fn t1, t2 -> Nx.Type.merge(t1, t2) end)
+        output_type = Enum.reduce(rest, type1, fn t1, t2 -> Nx.Type.merge(t1, t2) end)
 
         out = %{t1 | type: output_type, shape: output_shape, names: output_names}
         list_impl!(tensors).concatenate(out, tensors, axis)
     end
   end
 
+  defp flatten_list_or_container(list) when is_list(list) do
+    list
+    |> Enum.reduce([], &flatten_container/2)
+    |> Enum.reverse()
+  end
+
+  defp flatten_list_or_container(container) do
+    container
+    |> flatten_container([])
+    |> Enum.reverse()
+  end
+
+  defp flatten_container(container, acc) do
+    if match?(%{}, container) and not match?(%_{}, container) do
+      IO.warn(
+        "a map has been given to stack/concatenate. Maps do not have a predefined order " <>
+          "and therefore there is no guarantee over of the stack/concatenated tensors"
+      )
+    end
+
+    container
+    |> Nx.LazyContainer.traverse(acc, fn template, fun, acc -> {template, [fun.() | acc]} end)
+    |> elem(1)
+  end
+
   defp unzip4(enumerable) do
     {list1, list2, list3, list4} =
-      Enum.reduce(enumerable, {[], [], [], []}, fn {el1, el2, el3, el4},
-                                                   {list1, list2, list3, list4} ->
-        {[el1 | list1], [el2 | list2], [el3 | list3], [el4 | list4]}
+      Enum.reduce(enumerable, {[], [], [], []}, fn
+        {el1, el2, el3, el4}, {list1, list2, list3, list4} ->
+          {[el1 | list1], [el2 | list2], [el3 | list3], [el4 | list4]}
       end)
 
     {Enum.reverse(list1), Enum.reverse(list2), Enum.reverse(list3), Enum.reverse(list4)}
   end
 
   @doc """
-  Joins a list of tensors with the same shape along a new axis.
+  Stacks a list of tensors with the same shape along a new axis.
+
+  Tensors can be a tuple or any `Nx.Container` or `Nx.LazyContainer`.
+  This means you can easily concatenate all columns in a datafrane
+  and other data structures. For convenience, this function also allows
+  a list of tensors to be given, which may be common outside of `defn`.
+
+  If no axis is provided, defaults to 0. All tensors must have the same
+  shape.
+
+  If tensors with mixed types are given, the types will
+  be merged to a higher type and all of the tensors will
+  be cast to the higher type before concatenating.
+  If tensors are named, the names must match.
 
   ### Options
 
     * `:axis` - optional index of the axis along which the tensors are stacked. Defaults to 0.
     * `:name` - optional name for the added dimension. Defaults to an unnamed axis.
 
-  ### Examples
+  ## Examples
+
+  Stacking always creates a new dimension:
 
       iex> Nx.stack([1, 2, 3])
       #Nx.Tensor<
@@ -10751,6 +10856,8 @@ defmodule Nx do
           [4, 5, 6]
         ]
       >
+
+  The axis option can be given:
 
       iex> t1 = Nx.iota({2, 1, 4})
       iex> t2 = Nx.iota({2, 1, 4})
@@ -10778,51 +10885,36 @@ defmodule Nx do
         ]
       >
 
-      iex> t1 = Nx.iota({2, 1, 4})
-      iex> t2 = Nx.iota({2, 1, 4})
-      iex> t3 = Nx.iota({2, 1, 4})
-      iex> Nx.stack([t1, t2, t3], axis: 1)
-      #Nx.Tensor<
-        s64[2][3][1][4]
-        [
-          [
-            [
-              [0, 1, 2, 3]
-            ],
-            [
-              [0, 1, 2, 3]
-            ],
-            [
-              [0, 1, 2, 3]
-            ]
-          ],
-          [
-            [
-              [4, 5, 6, 7]
-            ],
-            [
-              [4, 5, 6, 7]
-            ],
-            [
-              [4, 5, 6, 7]
-            ]
-          ]
-        ]
-      >
+  And a name can be given for the new dimension:
 
       iex> Nx.stack([Nx.tensor(1), Nx.tensor(2)], name: :x)
       #Nx.Tensor<
         s64[x: 2]
         [1, 2]
       >
+
+  You can also pass any container (or lazy container) as first argument
+  and they are recursively traversed:
+
+      iex> Nx.stack({Nx.tensor([1, 2]), {Nx.tensor([3, 4]), Nx.tensor([5, 6])}})
+      #Nx.Tensor<
+        s64[3][2]
+        [
+          [1, 2],
+          [3, 4],
+          [5, 6]
+        ]
+      >
+
   """
   @doc type: :ndim, from_backend: false
-  def stack(tensors, opts \\ []) when is_list(tensors) do
+  def stack(tensors, opts \\ []) do
     opts = keyword!(opts, axis: 0, name: nil)
     axis = opts[:axis]
     name = opts[:name]
 
     tensors
+    |> flatten_list_or_container()
     |> Enum.map(&Nx.new_axis(&1, axis, name))
     |> Nx.concatenate(axis: axis)
   end
@@ -10839,7 +10931,7 @@ defmodule Nx do
       should be applied
     * `:direction` - Can be `:asc` or `:desc`. Defaults to `:asc`
 
-  ### Examples
+  ## Examples
 
       iex> Nx.sort(Nx.tensor([16, 23, 42, 4, 8, 15]))
       #Nx.Tensor<
@@ -11006,6 +11098,82 @@ defmodule Nx do
       axis: axis,
       direction: direction
     )
+  end
+
+  @doc """
+  Returns a tuple of `{values, indices}` for the top `k`
+  values in last dimension of the tensor.
+
+  `:k` is an option and must be at least 1, and less than
+  or equal to the size of the last dimension of the tensor.
+  It defaults to `1`.
+
+  ## Examples
+
+      iex> a = Nx.tensor([1, 2, 3, 4, 5])
+      iex> {values, indices} = Nx.top_k(a, k: 2)
+      iex> values
+      #Nx.Tensor<
+        s64[2]
+        [5, 4]
+      >
+      iex> indices
+      #Nx.Tensor<
+        s64[2]
+        [4, 3]
+      >
+
+  `:k` defaults to 1:
+
+      iex> a = Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+      iex> {values, indices} = Nx.top_k(a)
+      iex> values
+      #Nx.Tensor<
+        f32[2][1]
+        [
+          [3.0],
+          [6.0]
+        ]
+      >
+      iex> indices
+      #Nx.Tensor<
+        s64[2][1]
+        [
+          [2],
+          [2]
+        ]
+      >
+
+  ## Error cases
+
+      iex> a = Nx.tensor([1, 2, 3, 4, 5])
+      iex> Nx.top_k(a, k: 6)
+      ** (ArgumentError) top_k input last axis size must be greater than or equal to k, got size=5 and k=6
+
+      iex> a = Nx.tensor(1)
+      iex> Nx.top_k(a, k: 1)
+      ** (ArgumentError) top_k input must have at least rank 1
+
+  """
+  @doc type: :ndim
+  def top_k(tensor, opts \\ []) do
+    opts = Keyword.validate!(opts, k: 1)
+    %T{shape: shape, names: names} = tensor = to_tensor(tensor)
+    {output_shape, output_names} = Nx.Shape.top_k(shape, names, opts[:k])
+
+    out_values = %{tensor | shape: output_shape, names: output_names}
+    out_indices = %{tensor | shape: output_shape, names: output_names, type: {:s, 64}}
+
+    Nx.Shared.optional(:top_k, [tensor, opts], {out_values, out_indices}, fn tensor, opts ->
+      k = Keyword.fetch!(opts, :k)
+      rank = rank(tensor)
+
+      indices = argsort(tensor, axis: rank - 1, direction: :desc)
+      values = Nx.take_along_axis(tensor, indices, axis: rank - 1)
+
+      {slice_along_axis(values, 0, k, axis: rank - 1),
+       slice_along_axis(indices, 0, k, axis: rank - 1)}
+    end)
   end
 
   @doc """
@@ -11770,11 +11938,8 @@ defmodule Nx do
 
   defp call_fft(tensor, opts, kind) do
     tensor = to_tensor(tensor)
-
     shape = Nx.Shape.fft(tensor.shape)
-
     n = elem(shape, tuple_size(shape) - 1)
-
     opts = Keyword.validate!(opts, length: n, eps: 1.0e-10)
 
     length =
@@ -11860,7 +12025,7 @@ defmodule Nx do
       ]
     >
 
-  ### Error Cases
+  ## Error cases
 
       iex> Nx.linspace(0, 24, n: 1.0)
       ** (ArgumentError) expected n to be a non-negative integer, got: 1.0
