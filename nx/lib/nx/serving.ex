@@ -119,6 +119,11 @@ defmodule Nx.Serving do
 
       Supervisor.start_child(children, strategy: :one_for_one)
 
+  > Note: in your actual application, you want to make sure
+  > `Nx.Serving` comes early in your supervision tree, for example
+  > before your web application endpoint or your data processing
+  > pipelines, as those processes may end-up hitting Nx.Serving.
+
   Now you can send batched runs to said process:
 
       iex> batch = Nx.Batch.stack([Nx.tensor([1, 2, 3]), Nx.tensor([4, 5, 6])])
@@ -621,7 +626,13 @@ defmodule Nx.Serving do
       preprocessing: preprocessing,
       postprocessing: postprocessing,
       limit: limit
-    } = :persistent_term.get(persistent_key(name))
+    } =
+      :persistent_term.get(persistent_key(name), nil) ||
+        raise(
+          ArgumentError,
+          "could not find Nx.Serving with name #{inspect(name)}. " <>
+            "Make sure your Nx.Serving is running and/or started as part of your supervision tree"
+        )
 
     {batch, info} = handle_preprocessing(preprocessing, input)
 
@@ -843,10 +854,10 @@ defmodule Nx.Serving do
     {:noreply, server_timeout(state)}
   end
 
-  def handle_info({ref, reply}, %{tasks: tasks, module: module} = state) do
+  def handle_info({ref, :done}, %{tasks: tasks} = state) do
     case Enum.split_with(tasks, &(elem(&1, 0).ref == ref)) do
-      {[{_task, partition, ref_sizes}], tasks} ->
-        server_reply_ok(module, ref, reply, ref_sizes)
+      {[{_task, partition, _ref_sizes}], tasks} ->
+        Process.demonitor(ref, [:flush])
         {:noreply, server_task_done(state, tasks, partition)}
 
       _ ->
@@ -871,7 +882,7 @@ defmodule Nx.Serving do
   end
 
   @impl true
-  def terminate(_reason, %{module: module, tasks: tasks, in_queue: in_queue, stack: {stack, _}}) do
+  def terminate(_reason, %{tasks: tasks, in_queue: in_queue, stack: {stack, _}}) do
     # Emulate the process is gone for entries in the queue
     for {_batch, ref_sizes} <- :queue.to_list(in_queue) do
       server_reply_down(:noproc, ref_sizes)
@@ -885,21 +896,12 @@ defmodule Nx.Serving do
     # And wait until all current tasks are processed
     for {%Task{ref: ref}, _partition, ref_sizes} <- tasks do
       receive do
-        {^ref, reply} -> server_reply_ok(module, ref, reply, ref_sizes)
+        {^ref, :done} -> Process.demonitor(ref, [:flush])
         {:DOWN, ^ref, :process, _, reason} -> server_reply_down(reason, ref_sizes)
       end
     end
 
     :ok
-  end
-
-  defp server_reply_ok(module, ref, reply, ref_sizes) do
-    Process.demonitor(ref, [:flush])
-    {output, metadata} = handle_executed(module, reply)
-
-    for {ref, start, size} <- ref_sizes do
-      send(ref, {ref, {start, size, output, metadata}})
-    end
   end
 
   defp server_reply_down(reason, ref_sizes) do
@@ -953,7 +955,12 @@ defmodule Nx.Serving do
         wrapped_function = fn ->
           :telemetry.span([:nx, :serving, :execute], %{module: module}, fn ->
             {output, metadata} = function.()
-            {{output, metadata}, %{metadata: metadata, module: module}}
+
+            for {ref, start, size} <- ref_sizes do
+              send(ref, {ref, {start, size, output, metadata}})
+            end
+
+            {:done, %{metadata: metadata, module: module}}
           end)
         end
 

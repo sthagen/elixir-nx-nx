@@ -916,6 +916,10 @@ defmodule Nx.LinAlg do
 
       iex> Nx.LinAlg.qr(Nx.tensor([1, 2, 3, 4, 5]))
       ** (ArgumentError) tensor must have at least rank 2, got rank 1 with shape {5}
+
+      iex> t = Nx.tensor([[-3, 2, 1], [0, 1, 1], [0, 0, -1]])
+      iex> Nx.LinAlg.qr(t, mode: :error_test)
+      ** (ArgumentError) invalid :mode received. Expected one of [:reduced, :complete], received: :error_test
   """
   def qr(tensor, opts \\ []) do
     opts = keyword!(opts, mode: :reduced, eps: 1.0e-10)
@@ -926,7 +930,7 @@ defmodule Nx.LinAlg do
 
     unless mode in valid_modes do
       raise ArgumentError,
-            "invalid :mode received. Expected one of #{valid_modes}, received: #{mode}"
+            "invalid :mode received. Expected one of #{inspect(valid_modes)}, received: #{inspect(mode)}"
     end
 
     output_type = Nx.Type.to_floating(type)
@@ -1827,13 +1831,24 @@ defmodule Nx.LinAlg do
 
       iex> Nx.LinAlg.matrix_rank(Nx.tensor([1, 2, 3]))
       ** (ArgumentError) tensor must have rank 2, got rank 1 with shape {3}
+
+      iex> Nx.LinAlg.matrix_rank(Nx.tensor([[1, Complex.new(0, 2)], [3, Complex.new(0, -4)]]))
+      ** (ArgumentError) Nx.LinAlg.matrix_rank/2 is not yet implemented for complex inputs
   """
   @doc from_backend: false
   defn matrix_rank(a, opts \\ []) do
     # TODO: support batching when SVD supports it too
     opts = keyword!(opts, eps: 1.0e-7)
-    shape = Nx.shape(a)
+    %T{type: type, shape: shape} = Nx.to_tensor(a)
     size = Nx.rank(shape)
+
+    case type do
+      {:c, _} ->
+        raise ArgumentError, "Nx.LinAlg.matrix_rank/2 is not yet implemented for complex inputs"
+
+      _ ->
+        nil
+    end
 
     if size != 2 do
       raise(
