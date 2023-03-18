@@ -1035,6 +1035,9 @@ defmodule Nx.Shape do
       iex> Nx.Shape.normalize_axis({4, 2, 1, 4}, :z, [:batch, :x, :y, :z])
       3
 
+      iex> Nx.Shape.normalize_axis({4, 2, 1, 4}, 2, [nil, nil, nil, nil], 1)
+      3
+
   ## Error cases
 
       iex> Nx.Shape.normalize_axis({4, 2, 5}, -4, [:batch, :x, :y])
@@ -1050,18 +1053,20 @@ defmodule Nx.Shape do
       ** (ArgumentError) axis name cannot be nil
 
   """
-  def normalize_axis(shape, axis, names)
+  def normalize_axis(shape, axis, names, vectorized_offset \\ 0)
 
-  def normalize_axis(shape, axis, _names) when axis < 0 and abs(axis) <= tuple_size(shape),
-    do: tuple_size(shape) + axis
+  def normalize_axis(shape, axis, _names, _vectorized_offset)
+      when axis < 0 and abs(axis) <= tuple_size(shape),
+      do: tuple_size(shape) + axis
 
-  def normalize_axis(shape, axis, _names) when axis >= 0 and axis < tuple_size(shape),
-    do: axis
+  def normalize_axis(shape, axis, _names, vectorized_offset)
+      when axis >= 0 and axis < tuple_size(shape),
+      do: axis + vectorized_offset
 
-  def normalize_axis(_shape, nil, _names),
+  def normalize_axis(_shape, nil, _names, _vectorized_offset),
     do: raise(ArgumentError, "axis name cannot be nil")
 
-  def normalize_axis(_shape, axis, names) when is_atom(axis) do
+  def normalize_axis(_shape, axis, names, _vectorized_offset) when is_atom(axis) do
     if axis in names do
       Enum.with_index(names)[axis]
     else
@@ -1070,7 +1075,7 @@ defmodule Nx.Shape do
     end
   end
 
-  def normalize_axis(shape, axis, _names) do
+  def normalize_axis(shape, axis, _names, _vectorized_offset) do
     raise ArgumentError,
           "given axis (#{inspect(axis)}) invalid for shape with rank #{tuple_size(shape)}"
   end
@@ -1093,12 +1098,12 @@ defmodule Nx.Shape do
       iex> Nx.Shape.normalize_axes({2, 3, 4}, [1, 1], [nil, nil, nil])
       ** (ArgumentError) axes [1, 1] must be unique integers between 0 and 2
   """
-  def normalize_axes(shape, axes, names) when is_list(axes) do
-    normalized = Enum.map(axes, &normalize_axis(shape, &1, names))
+  def normalize_axes(shape, axes, names, offset \\ 0) when is_list(axes) do
+    normalized = Enum.map(axes, &normalize_axis(shape, &1, names, offset))
 
     if length(Enum.uniq(normalized)) != length(axes) do
       raise ArgumentError,
-            "axes #{inspect(axes)} must be unique integers between 0 and #{tuple_size(shape) - 1}"
+            "axes #{inspect(axes)} must be unique integers between 0 and #{tuple_size(shape) - 1 - offset}"
     end
 
     normalized
@@ -1115,9 +1120,9 @@ defmodule Nx.Shape do
       [2, 1, 0]
 
   """
-  def transpose_axes(shape) do
+  def transpose_axes(shape, offset \\ 0) do
     rank = tuple_size(shape)
-    count_down(rank, rank - 1)
+    count_down(rank, rank + offset - 1)
   end
 
   @doc """
@@ -2099,7 +2104,7 @@ defmodule Nx.Shape do
       {{2, 3, 1}, [:a, :b, :c]}
 
   ## Error cases
-      
+
       iex> Nx.Shape.top_k({}, [], 1)
       ** (ArgumentError) top_k input must have at least rank 1
 
