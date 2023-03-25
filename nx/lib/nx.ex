@@ -758,6 +758,12 @@ defmodule Nx do
     Nx.Type.infer(number)
   end
 
+  defp infer_type(%Nx.Tensor{} = value) do
+    raise ArgumentError,
+          "invalid value given to Nx.tensor/1. If you want to create a tensor from other tensors, " <>
+            "consider using Nx.concatenate/2 or Nx.stack/2 instead. Got: #{inspect(value)}"
+  end
+
   defp infer_type(value) do
     raise ArgumentError, "invalid value given to Nx.tensor/1, got: #{inspect(value)}"
   end
@@ -1205,7 +1211,7 @@ defmodule Nx do
       output
       |> reshape(base_shape)
       |> broadcast(output_shape)
-      |> revectorize_and_validate_sizes(vectorized_axes)
+      |> vectorize(vectorized_axes)
     else
       output
     end
@@ -1353,7 +1359,7 @@ defmodule Nx do
             )
         end
 
-      revectorize_and_validate_sizes(out, vectorized_axes)
+      vectorize(out, vectorized_axes)
     else
       if tuple_size(shape) < 2 do
         raise ArgumentError,
@@ -2252,13 +2258,12 @@ defmodule Nx do
   @doc type: :conversion
   def to_heatmap(tensor, opts \\ []) when is_list(opts) do
     tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
 
     if tensor.shape == {} do
       raise ArgumentError, "cannot show heatmap for scalar tensors, got: #{inspect(tensor)}"
     end
 
-    %Nx.Heatmap{tensor: to_tensor(tensor), opts: opts}
+    %Nx.Heatmap{tensor: tensor, opts: opts}
   end
 
   ## Reflection operations (do not invoke the backend)
@@ -2395,6 +2400,27 @@ defmodule Nx do
         [0, 0, 0]
       >
 
+      iex> t = Nx.vectorize(Nx.tensor([[0, -1], [1, -2], [2, -3]], type: :s8), :x)
+      #Nx.Tensor<
+        vectorized[x: 3]
+        s8[2]
+        [
+          [0, -1],
+          [1, -2],
+          [2, -3]
+        ]
+      >
+      iex> Nx.bitcast(t, :u8)
+      #Nx.Tensor<
+        vectorized[x: 3]
+        u8[2]
+        [
+          [0, 255],
+          [1, 254],
+          [2, 253]
+        ]
+      >
+
   ## Error cases
 
       iex> Nx.bitcast(Nx.tensor([0, 1, 2], names: [:data], type: :s16), :f32)
@@ -2408,21 +2434,22 @@ defmodule Nx do
   """
   @doc type: :type
   def bitcast(tensor, type) do
-    %T{type: {_, bits} = input_type} = tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    {_, new_bits} = new_type = Nx.Type.normalize!(type)
+    apply_vectorized(tensor, fn tensor ->
+      %T{type: {_, bits} = input_type} = tensor
+      {_, new_bits} = new_type = Nx.Type.normalize!(type)
 
-    Nx.Shared.raise_complex_not_supported(input_type, :bitcast, 2)
-    Nx.Shared.raise_complex_not_supported(new_type, :bitcast, 2)
+      Nx.Shared.raise_complex_not_supported(input_type, :bitcast, 2)
+      Nx.Shared.raise_complex_not_supported(new_type, :bitcast, 2)
 
-    unless new_bits == bits do
-      raise ArgumentError,
-            "input type width must match new type width," <>
-              " got input type #{inspect(input_type)} and" <>
-              " output type #{inspect(new_type)}"
-    end
+      unless new_bits == bits do
+        raise ArgumentError,
+              "input type width must match new type width," <>
+                " got input type #{inspect(input_type)} and" <>
+                " output type #{inspect(new_type)}"
+      end
 
-    impl!(tensor).bitcast(%{tensor | type: new_type}, tensor)
+      impl!(tensor).bitcast(%{tensor | type: new_type}, tensor)
+    end)
   end
 
   @doc """
@@ -2564,11 +2591,35 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  Only the inner axis names are renamed. New names must not overlap with
+  vectorized names.
+
+      iex> t = Nx.tensor([[1], [2], [3]], names: [nil, :y]) |> Nx.vectorize(:x)
+      iex> Nx.rename(t, [:a])
+      #Nx.Tensor<
+        vectorized[x: 3]
+        s64[a: 1]
+        [
+          [1],
+          [2],
+          [3]
+        ]
+      >
+      iex> Nx.rename(t, [:x])
+      ** (ArgumentError) name :x is already a name for a vectorized axis
   """
   @doc type: :shape
   def rename(tensor, names) do
     tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
+
+    Enum.each(tensor.vectorized_axes, fn {name, _} ->
+      if name in names do
+        raise ArgumentError, "name #{inspect(name)} is already a name for a vectorized axis"
+      end
+    end)
+
     %{tensor | names: Nx.Shape.named_axes!(names, tensor.shape)}
   end
 
@@ -2662,11 +2713,28 @@ defmodule Nx do
       >
       iex> Nx.flatten(t, axes: [0, 2])
       ** (ArgumentError) flatten axes must be consecutive
+
+  ## Vectorized tensors
+
+  Only the inner shape is flattened, leaving vectorized axes untouched.
+
+      iex> t = Nx.iota({1, 3, 2, 2}) |> Nx.vectorize(:x) |> Nx.vectorize(:y)
+      iex> Nx.flatten(t)
+      #Nx.Tensor<
+        vectorized[x: 1][y: 3]
+        s64[4]
+        [
+          [
+            [0, 1, 2, 3],
+            [4, 5, 6, 7],
+            [8, 9, 10, 11]
+          ]
+        ]
+      >
   """
   @doc type: :shape
   def flatten(tensor, opts \\ []) do
     tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
     opts = Keyword.validate!(opts, [:axes])
     {shape, names} = Nx.Shape.flatten(tensor.shape, tensor.names, opts[:axes])
     reshape(tensor, shape, names: names)
@@ -2768,6 +2836,33 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  Like `reshape/2`, `tile/2` works on the shape, leaving vectors untouched.
+
+      iex> t = Nx.vectorize(Nx.tensor([[1, 2, 3], [4, 5, 6]]), :x)
+      iex> Nx.tile(t, [1, 3, 1])
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64[1][3][3]
+        [
+          [
+            [
+              [1, 2, 3],
+              [1, 2, 3],
+              [1, 2, 3]
+            ]
+          ],
+          [
+            [
+              [4, 5, 6],
+              [4, 5, 6],
+              [4, 5, 6]
+            ]
+          ]
+        ]
+      >
+
   ## Error cases
 
       iex> Nx.tile(Nx.tensor([1,2]), 1.0)
@@ -2781,9 +2876,6 @@ defmodule Nx do
   """
   @doc type: :shape, from_backend: false
   def tile(tensor, repetitions) do
-    tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-
     unless tile_valid_repetitions?(repetitions) do
       raise ArgumentError,
             "repetitions must be a list of integers, got: #{inspect(repetitions)}"
@@ -2956,6 +3048,47 @@ defmodule Nx do
         [1, 2]
       >
 
+  ## Vectorized tensors
+
+  `squeeze/2` operates on the tensor's shape, leaving vectorized axes untouched.
+
+      iex> t = Nx.tensor([[[[[1], [2], [3]]]]]) |> Nx.vectorize(:x)
+      #Nx.Tensor<
+        vectorized[x: 1]
+        s64[1][1][3][1]
+        [
+          [
+            [
+              [
+                [1],
+                [2],
+                [3]
+              ]
+            ]
+          ]
+        ]
+      >
+      iex> Nx.squeeze(t)
+      #Nx.Tensor<
+        vectorized[x: 1]
+        s64[3]
+        [
+          [1, 2, 3]
+        ]
+      >
+      iex> Nx.squeeze(t, axes: [0, 1])
+      #Nx.Tensor<
+        vectorized[x: 1]
+        s64[3][1]
+        [
+          [
+            [1],
+            [2],
+            [3]
+          ]
+        ]
+      >
+
   ## Error cases
 
       iex> Nx.squeeze(Nx.tensor([[1, 2, 3], [4, 5, 6]]), axes: [1])
@@ -2967,18 +3100,19 @@ defmodule Nx do
   """
   @doc type: :shape
   def squeeze(tensor, opts \\ []) do
-    opts = keyword!(opts, [:axes])
-    %T{shape: old_shape, names: names} = tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    axes = opts[:axes] || Nx.Shape.squeeze_axes(old_shape)
-    axes = Nx.Shape.normalize_axes(old_shape, axes, names)
-    {new_shape, new_names} = Nx.Shape.squeeze(old_shape, axes, names)
+    apply_vectorized(tensor, fn tensor, offset ->
+      opts = keyword!(opts, [:axes])
+      %T{shape: old_shape, names: names} = tensor
+      axes = opts[:axes] || Nx.Shape.squeeze_axes(old_shape, offset)
+      axes = Nx.Shape.normalize_axes(old_shape, axes, names, offset)
+      {new_shape, new_names} = Nx.Shape.squeeze(old_shape, axes, names)
 
-    if old_shape == new_shape do
-      tensor
-    else
-      impl!(tensor).squeeze(%{tensor | shape: new_shape, names: new_names}, tensor, axes)
-    end
+      if old_shape == new_shape do
+        tensor
+      else
+        impl!(tensor).squeeze(%{tensor | shape: new_shape, names: new_names}, tensor, axes)
+      end
+    end)
   end
 
   @doc """
@@ -3097,33 +3231,137 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  Vectorized axes remain unchanged, and normal broadcast rules apply otherwise.
+
+      iex> a = Nx.tensor([[[1, 2, 3]], [[4, 5, 6]]]) |> Nx.vectorize(:x)
+      iex> Nx.broadcast(a, {2, 3})
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64[2][3]
+        [
+          [
+            [1, 2, 3],
+            [1, 2, 3]
+          ],
+          [
+            [4, 5, 6],
+            [4, 5, 6]
+          ]
+        ]
+      >
+
+  For tensors as shapes, the broadcast will only take the shape in consideration.
+
+      iex> a = Nx.tensor([[1, 2, 3], [4, 5, 6]]) |> Nx.vectorize(:x)
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64[3]
+        [
+          [1, 2, 3],
+          [4, 5, 6]
+        ]
+      >
+      iex> b = Nx.tensor([[[1, 2, 3], [4, 5, 6]]], names: [nil, nil, :y]) |> Nx.vectorize(:a)
+      #Nx.Tensor<
+        vectorized[a: 1]
+        s64[2][y: 3]
+        [
+          [
+            [1, 2, 3],
+            [4, 5, 6]
+          ]
+        ]
+      >
+      iex> Nx.broadcast(a, b, axes: [1], names: [:i, :j])
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64[i: 2][j: 3]
+        [
+          [
+            [1, 2, 3],
+            [1, 2, 3]
+          ],
+          [
+            [4, 5, 6],
+            [4, 5, 6]
+          ]
+        ]
+      >
   """
   @doc type: :shape
   def broadcast(tensor, shape, opts \\ []) do
     opts = keyword!(opts, [:axes, :names])
 
-    tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    broadcast_names = opts[:names] || names!(shape)
-    broadcast_shape = shape(shape)
-    opts_axes = opts[:axes]
+    apply_vectorized(tensor, fn tensor, offset ->
+      broadcast_names = opts[:names] || names!(shape)
 
-    axes =
-      if opts_axes do
-        Nx.Shape.normalize_axes(broadcast_shape, opts_axes, tensor.names)
+      broadcast_names =
+        if offset > 0 and is_list(broadcast_names) do
+          List.duplicate(nil, offset + 1) ++ broadcast_names
+        else
+          broadcast_names
+        end
+
+      broadcast_shape_l = shape |> shape() |> Tuple.to_list()
+
+      offset_axes =
+        if offset > 0 do
+          Enum.map(0..(offset - 1)//1, &elem(tensor.shape, &1)) ++ [1]
+        else
+          []
+        end
+
+      tensor =
+        if offset > 0 do
+          new_axis(tensor, offset)
+        else
+          tensor
+        end
+
+      broadcast_shape = List.to_tuple(offset_axes ++ broadcast_shape_l)
+
+      opts_axes = opts[:axes]
+
+      actual_offset = if offset > 0, do: offset + 1, else: 0
+
+      axes =
+        if opts_axes do
+          axes =
+            Nx.Shape.normalize_axes(
+              broadcast_shape,
+              opts_axes,
+              tensor.names,
+              actual_offset
+            )
+
+          if offset > 0 do
+            Enum.to_list(0..(actual_offset - 1)//1) ++ axes
+          else
+            axes
+          end
+        else
+          Nx.Shape.broadcast_axes(tensor.shape, broadcast_shape)
+        end
+
+      broadcast_names = Nx.Shape.named_axes!(broadcast_names, broadcast_shape)
+      out = %{tensor | names: broadcast_names, shape: broadcast_shape}
+
+      out =
+        if tensor.shape == broadcast_shape and is_nil(opts_axes) do
+          out
+        else
+          _ = Nx.Shape.broadcast!(tensor.shape, broadcast_shape, axes, actual_offset)
+          impl!(tensor).broadcast(out, tensor, broadcast_shape, axes)
+        end
+
+      if offset > 0 do
+        squeeze(out, axes: [offset])
       else
-        Nx.Shape.broadcast_axes(tensor.shape, broadcast_shape)
+        out
       end
-
-    broadcast_names = Nx.Shape.named_axes!(broadcast_names, broadcast_shape)
-    out = %{tensor | names: broadcast_names, shape: broadcast_shape}
-
-    if tensor.shape == broadcast_shape and is_nil(opts_axes) do
-      out
-    else
-      _ = Nx.Shape.broadcast!(tensor.shape, broadcast_shape, axes)
-      impl!(tensor).broadcast(out, tensor, broadcast_shape, axes)
-    end
+    end)
   end
 
   @doc """
@@ -3314,24 +3552,40 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  Like with the non-vectorized case, `pad_value` must be a non-vectorized scalar tensor.
+  Vectorized axes remain unchanged.
+
+      iex> t = Nx.tensor([[1], [2], [3]], names: [nil, :data]) |> Nx.vectorize(:x)
+      iex> Nx.pad(t, 0, [{1, 1, 0}])
+      #Nx.Tensor<
+        vectorized[x: 3]
+        s64[data: 3]
+        [
+          [0, 1, 0],
+          [0, 2, 0],
+          [0, 3, 0]
+        ]
+      >
+
   """
   @doc type: :shape
   def pad(tensor, pad_value, padding_config) when is_list(padding_config) do
-    output_type = binary_type(tensor, pad_value)
-    tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
+    apply_vectorized(tensor, fn tensor, offset ->
+      output_type = binary_type(tensor, pad_value)
+      pad_value = to_tensor(pad_value)
 
-    pad_value = to_tensor(pad_value)
-    Nx.Shared.raise_vectorized_not_implemented_yet(pad_value, __ENV__.function)
+      if not (pad_value.shape == {} and pad_value.vectorized_axes == []) do
+        raise ArgumentError, "padding value must be a scalar and non-vectorized"
+      end
 
-    if pad_value.shape != {} do
-      raise ArgumentError, "padding value must be a scalar"
-    end
+      padding_config = List.duplicate({0, 0, 0}, offset) ++ padding_config
+      shape = Nx.Shape.pad(tensor.shape, padding_config)
 
-    shape = Nx.Shape.pad(tensor.shape, padding_config)
-
-    out = %{tensor | type: output_type, shape: shape}
-    impl!(tensor).pad(out, tensor, pad_value, padding_config)
+      out = %{tensor | type: output_type, shape: shape}
+      impl!(tensor).pad(out, tensor, pad_value, padding_config)
+    end)
   end
 
   ## Reflection
@@ -3410,14 +3664,31 @@ defmodule Nx do
       iex> Nx.compatible?(%{foo: Nx.iota({3, 2})}, %{bar: Nx.iota({3, 2})})
       false
 
+  ## Vectorized tensors
+
+  Same compatibility criteria applies to vectorized tensors, but there's
+  the additional requirement that vectorized axes must be the same in both
+  tensors.
+
+      iex> Nx.compatible?(Nx.tensor([1, 2]) |> Nx.vectorize(:x), Nx.tensor([3, 4]) |> Nx.vectorize(:x))
+      true
+      iex> Nx.compatible?(Nx.tensor([1, 2, 3]) |> Nx.vectorize(:x), Nx.tensor([1, 2]) |> Nx.vectorize(:x))
+      false
+      iex> Nx.compatible?(Nx.tensor([1]) |> Nx.vectorize(:x), Nx.tensor([1, 2]) |> Nx.vectorize(:y))
+      false
+
   """
   @doc type: :shape
   def compatible?(left, right)
 
-  def compatible?(%T{} = left, %T{} = right) do
-    Nx.Shared.raise_vectorized_not_implemented_yet(left, __ENV__.function)
-    Nx.Shared.raise_vectorized_not_implemented_yet(right, __ENV__.function)
+  def compatible?(
+        %T{type: type, shape: shape, names: l_names, vectorized_axes: l_axes},
+        %T{type: type, shape: shape, names: r_names, vectorized_axes: r_axes}
+      ) do
+    l_axes == r_axes and compatible_names?(l_names, r_names)
+  end
 
+  def compatible?(%T{} = left, %T{} = right) do
     %{type: type, shape: shape, names: left_names} = left
 
     case right do
@@ -3819,7 +4090,7 @@ defmodule Nx do
 
       result = impl!(tensor).backend_copy(tensor, backend, opts)
 
-      revectorize_and_validate_sizes(result, axes)
+      vectorize(result, axes)
     end)
   end
 
@@ -3873,7 +4144,7 @@ defmodule Nx do
       tensor = to_tensor(tensor)
       {tensor, axes} = devectorize_with_axes(tensor)
       result = impl!(tensor).backend_transfer(tensor, backend, opts)
-      revectorize_and_validate_sizes(result, axes)
+      vectorize(result, axes)
     end)
   end
 
@@ -3903,8 +4174,13 @@ defmodule Nx do
   @doc """
   Transforms a tensor into a vectorized tensor.
 
-  Each vectorization removes the leading axis from the shape and appends it to
-  `:vectorized_axes` list for the tensor.
+  Each vectorization removes the leading axes from the shape and appends them to
+  the `:vectorized_axes` list for the tensor.
+
+  The vectorization specification can be a list of atoms or `{atom, pos_integer}`
+  pairs. If a single atom is given, it behaves as a single-element list.
+  The atom names the vectorized axes. If a pair is given, we also verify
+  that the given size matches the size of the to-be-vectorized axis.
 
   In the examples below, we discuss in more detail how a vectorized tensor works.
 
@@ -3933,6 +4209,24 @@ defmodule Nx do
           [3, 4, 5]
         ]
       >
+
+  You can also vectorize multiple axes at once by passing a list,
+  as seen in the examples below. The first example doesn't validate
+  sizes. The second ensures the second axis has size `3`.
+
+      iex> t = Nx.iota({2, 3})
+      iex> v1 = Nx.vectorize(t, [:first, :second])
+      #Nx.Tensor<
+        vectorized[first: 2][second: 3]
+        s64
+        [
+          [0, 1, 2],
+          [3, 4, 5]
+        ]
+      >
+      iex> v2 = Nx.vectorize(t, [:first, second: 3])
+      iex> v1 == v2
+      true
 
   A vectorized tensor can be thought of as a tensor that signals
   to Nx that any operation applied on it must instead be applied
@@ -3988,33 +4282,105 @@ defmodule Nx do
           [1, 2]
         ]
       >
+
+  ## Error cases
+
+      iex> Nx.vectorize(Nx.tensor(1), :x)
+      ** (ArgumentError) cannot vectorize tensor of rank 0
+
+      iex> Nx.vectorize(Nx.tensor([1]), [:x, :y])
+      ** (ArgumentError) number of vectorized axes must not be greater than the shape size
+
+      iex> Nx.vectorize(Nx.tensor([1]), [x: 2])
+      ** (ArgumentError) expected vectorized axis :x to have size 2, got 1
+
+      iex> Nx.vectorize(Nx.tensor([[1]]), [:x, "y"])
+      ** (ArgumentError) expected vectorized axis specification to be an atom or a tuple of {atom, pos_integer}, got: "y"
+
+      iex> Nx.vectorize(Nx.tensor([[1]], names: [:x, :y]), [:y])
+      ** (ArgumentError) cannot use name :y for new vectorized axes because there's already an axis with the same name
+
+      iex> t = Nx.vectorize(Nx.tensor([[1]]), :x)
+      iex> Nx.vectorize(t, :x)
+      ** (ArgumentError) cannot use name :x for new vectorized axes because there's already a vectorized axis with the same name
   """
   @doc type: :shape
-  def vectorize(tensor, name)
+  @spec vectorize(
+          tensor :: Nx.Tensor.t(),
+          name_or_axes :: atom() | [atom() | {atom(), pos_integer()}]
+        ) ::
+          Nx.Tensor.t()
+  def vectorize(tensor, name_or_axes)
 
-  def vectorize(_tensor, name) when not is_atom(name) do
-    raise ArgumentError, "name for new vectorized axis must be an atom, got: #{inspect(name)}"
-  end
+  def vectorize(tensor, []), do: to_tensor(tensor)
 
   def vectorize(%Nx.Tensor{shape: {}}, _name) do
     raise ArgumentError, "cannot vectorize tensor of rank 0"
   end
 
-  def vectorize(%Nx.Tensor{names: names, shape: shape, vectorized_axes: vec_axes} = tensor, name) do
-    size = elem(shape, 0)
-    new_shape = Tuple.delete_at(shape, 0)
-    names = tl(names)
+  def vectorize(%Nx.Tensor{} = t, name) when is_atom(name), do: vectorize(t, [name])
+
+  def vectorize(
+        %Nx.Tensor{names: names, shape: shape, vectorized_axes: vec_axes} = tensor,
+        vector_spec
+      ) do
+    n = length(vector_spec)
+
+    if n > tuple_size(shape) do
+      raise ArgumentError, "number of vectorized axes must not be greater than the shape size"
+    end
+
+    shape_l = Tuple.to_list(shape)
+
+    {to_vectorize_shape_l, new_shape_l} = Enum.split(shape_l, n)
+
+    new_vectorized_axes =
+      Enum.zip_with([vector_spec, to_vectorize_shape_l], fn
+        [name, size] when is_atom(name) ->
+          {name, size}
+
+        [{name, size}, size] when is_atom(name) ->
+          {name, size}
+
+        [{name, other_size}, size] when is_atom(name) and is_integer(other_size) ->
+          raise ArgumentError,
+                "expected vectorized axis #{inspect(name)} to have size #{other_size}, got #{size}"
+
+        [spec, _] ->
+          raise ArgumentError,
+                "expected vectorized axis specification to be an atom or a tuple of {atom, pos_integer}, got: #{inspect(spec)}"
+      end)
+
+    names = Enum.drop(names, n)
+
+    for name <- names, {new_axis_name, _} <- new_vectorized_axes, name == new_axis_name do
+      raise ArgumentError,
+            "cannot use name #{inspect(name)} for new vectorized axes because there's already an axis with the same name"
+    end
+
+    for {name, _} <- vec_axes, {new_axis_name, _} <- new_vectorized_axes, name == new_axis_name do
+      raise ArgumentError,
+            "cannot use name #{inspect(name)} for new vectorized axes because there's already a vectorized axis with the same name"
+    end
+
+    vectorized_axes = vec_axes ++ new_vectorized_axes
 
     %Nx.Tensor{
       tensor
-      | shape: new_shape,
+      | shape: List.to_tuple(new_shape_l),
         names: names,
-        vectorized_axes: vec_axes ++ [{name, size}]
+        vectorized_axes: vectorized_axes
     }
   end
 
   @doc """
   Transforms a vectorized tensor back into a regular tensor.
+
+  ## Options
+
+    * `:keep_names` - a boolean indicating whether
+      vectorized axes' names should be turned into the new
+      axes' names. Defaults to `true`.
 
   ## Examples
 
@@ -4039,21 +4405,39 @@ defmodule Nx do
           ]
         ]
       >
+      iex> Nx.devectorize(t, keep_names: false)
+      #Nx.Tensor<
+        s64[1][2][3]
+        [
+          [
+            [0, 1, 2],
+            [3, 4, 5]
+          ]
+        ]
+      >
   """
   @doc type: :shape
-  def devectorize(%T{shape: shape, names: names, vectorized_axes: vectorized_axes} = tensor)
+  def devectorize(tensor, opts \\ [])
+
+  def devectorize(%T{shape: shape, names: names, vectorized_axes: vectorized_axes} = tensor, opts)
       when vectorized_axes != [] do
+    opts = keyword!(opts, keep_names: true)
     {vectorized_names, vectorized_sizes} = Enum.unzip(vectorized_axes)
 
     output_shape_l = vectorized_sizes ++ Tuple.to_list(shape)
     output_shape = List.to_tuple(output_shape_l)
 
-    output_names = vectorized_names ++ names
+    output_names =
+      if opts[:keep_names] do
+        vectorized_names ++ names
+      else
+        Enum.reduce(vectorized_names, names, fn _, names -> [nil | names] end)
+      end
 
     %{tensor | shape: output_shape, names: output_names, vectorized_axes: []}
   end
 
-  def devectorize(tensor), do: tensor
+  def devectorize(tensor, _), do: tensor
 
   @doc """
   Reshapes input tensors so that they are all vectorized with the same vectors.
@@ -4093,9 +4477,125 @@ defmodule Nx do
   @doc type: :shape
   def reshape_vectors(tensors)
 
-  def reshape_vectors([tensor]), do: [tensor]
+  def reshape_vectors([tensor]), do: [to_tensor(tensor)]
 
   def reshape_vectors(input) when is_list(input) do
+    {devectorized_tensors, canonical_vectorized_axes, _n} = do_reshape_vectors(input)
+
+    Enum.map(
+      devectorized_tensors,
+      &vectorize(&1, Keyword.keys(canonical_vectorized_axes))
+    )
+  end
+
+  @doc """
+  Broadcasts vectorized axes, ensuring they end up with the same final size.
+
+  The inner shape is unchanged for each tensor.
+  The order of the vectorized axes is determined by order of appearance in the input list.
+
+  ## Examples
+
+      iex> x = Nx.tensor([1, 2]) |> Nx.vectorize(:x)
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64
+        [1, 2]
+      >
+      iex> xy = Nx.tensor([[[5]], [[6]]]) |> Nx.vectorize(:y) |> Nx.vectorize(:x)
+      #Nx.Tensor<
+        vectorized[y: 2][x: 1]
+        s64[1]
+        [
+          [
+            [5]
+          ],
+          [
+            [6]
+          ]
+        ]
+      >
+      iex> [broadcast_x, broadcast_xy] = Nx.broadcast_vectors([x, xy])
+      iex> broadcast_x
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        s64
+        [
+          [1, 1],
+          [2, 2]
+        ]
+      >
+      iex> broadcast_xy
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        s64[1]
+        [
+          [
+            [5],
+            [6]
+          ],
+          [
+            [5],
+            [6]
+          ]
+        ]
+      >
+      iex> [broadcast_xy, broadcast_x] = Nx.broadcast_vectors([xy, x])
+      iex> broadcast_x
+      #Nx.Tensor<
+        vectorized[y: 2][x: 2]
+        s64
+        [
+          [1, 2],
+          [1, 2]
+        ]
+      >
+      iex> broadcast_xy
+      #Nx.Tensor<
+        vectorized[y: 2][x: 2]
+        s64[1]
+        [
+          [
+            [5],
+            [5]
+          ],
+          [
+            [6],
+            [6]
+          ]
+        ]
+      >
+  """
+  @doc type: :shape
+  def broadcast_vectors([t]), do: t
+
+  def broadcast_vectors(tensors) when is_list(tensors) do
+    {devectorized_tensors, canonical_vectorized_axes, offset} = do_reshape_vectors(tensors)
+
+    target_vector_shape_l =
+      devectorized_tensors
+      |> Enum.map(&(&1.shape |> Tuple.to_list() |> Enum.take(offset)))
+      |> Enum.zip_with(&Enum.max/1)
+
+    target_vectorized_axes =
+      Enum.zip_with([canonical_vectorized_axes, target_vector_shape_l], fn [{k, _}, v] ->
+        {k, v}
+      end)
+
+    devectorized_tensors
+    |> Enum.map(fn t ->
+      tensor_base_shape_l = t.shape |> Tuple.to_list() |> Enum.drop(offset)
+
+      target_shape = List.to_tuple(target_vector_shape_l ++ tensor_base_shape_l)
+
+      broadcast(t, target_shape, names: t.names)
+    end)
+    |> Enum.map(&vectorize(&1, target_vectorized_axes))
+  end
+
+  defp do_reshape_vectors([input]), do: [to_tensor(input)]
+
+  defp do_reshape_vectors(input) do
     # For all tensors to be compatible, each pair also needs to be compatible
     # This means that we can do a first pass accumulating axes into
     # the first tensor, and then a second pass getting them all into their final shapes.
@@ -4106,9 +4606,24 @@ defmodule Nx do
 
     # calculate the expected order for vectorized axes
     canonical_vectorized_axes =
-      Enum.reduce(tensors, initial_vectorized_axes, &combine_vectorized_axes/2)
+      Enum.reduce(tensors, initial_vectorized_axes, &do_reshape_vectors_combine_vectorized_axes/2)
 
-    Enum.map([first | tensors], fn %T{shape: shape, vectorized_axes: current_axes} = t ->
+    n = length(canonical_vectorized_axes)
+
+    devectorized_tensors =
+      do_reshape_vectors_devectorize([first | tensors], canonical_vectorized_axes, n)
+
+    {devectorized_tensors, canonical_vectorized_axes, n}
+  end
+
+  defp do_reshape_vectors_devectorize(tensors, [], _n), do: tensors
+
+  defp do_reshape_vectors_devectorize(tensors, canonical_vectorized_axes, n) do
+    Enum.map(tensors, fn %T{
+                           names: names,
+                           shape: shape,
+                           vectorized_axes: current_axes
+                         } = t ->
       {vectorized_axes, []} =
         Enum.map_reduce(canonical_vectorized_axes, current_axes, fn
           {k, _}, [] ->
@@ -4126,14 +4641,18 @@ defmodule Nx do
 
       target_shape = List.to_tuple(Keyword.values(vectorized_axes) ++ Tuple.to_list(shape))
 
+      target_names = List.duplicate(nil, n) ++ names
+
       t
       |> devectorize()
-      |> reshape(target_shape)
-      |> revectorize_and_validate_sizes(canonical_vectorized_axes, true)
+      |> reshape(target_shape, names: target_names)
     end)
   end
 
-  defp combine_vectorized_axes(%T{vectorized_axes: right_vectorized_axes}, left_vectorized_axes) do
+  defp do_reshape_vectors_combine_vectorized_axes(
+         %T{vectorized_axes: right_vectorized_axes},
+         left_vectorized_axes
+       ) do
     {left_pairs, both_pairs, right_pairs} =
       Enum.reduce(left_vectorized_axes, {[], [], right_vectorized_axes}, fn
         {name, size}, {lefties, both, righties} ->
@@ -4160,48 +4679,28 @@ defmodule Nx do
   end
 
   defp apply_vectorized(tensor, fun) when is_tensor(tensor) do
-    tensor = to_tensor(tensor)
+    %T{vectorized_axes: vectorized_axes} = tensor = to_tensor(tensor)
 
-    if tensor.vectorized_axes != [] do
-      {tensor, vectorized_axes} = devectorize_with_axes(tensor)
+    fun =
+      if is_function(fun, 2) do
+        &fun.(&1, length(vectorized_axes))
+      else
+        fun
+      end
 
-      if is_function(fun, 2) do
-        tensor
-        |> fun.(length(vectorized_axes))
-        |> revectorize_and_validate_sizes(vectorized_axes)
-      else
-        tensor
-        |> fun.()
-        |> revectorize_and_validate_sizes(vectorized_axes)
-      end
-    else
-      if is_function(fun, 2) do
-        fun.(tensor, 0)
-      else
-        fun.(tensor)
-      end
+    tensor
+    |> devectorize()
+    |> fun.()
+    |> case do
+      {t1, t2} -> {vectorize(t1, vectorized_axes), vectorize(t2, vectorized_axes)}
+      t -> vectorize(t, vectorized_axes)
     end
   end
 
   defp apply_vectorized([left, right], fun) do
-    left = to_tensor(left)
-    right = to_tensor(right)
+    [left, right] = reshape_vectors([left, right])
 
     if left.vectorized_axes != [] or right.vectorized_axes != [] do
-      [left, right] = reshape_vectors([left, right])
-
-      vectorized_axes =
-        Enum.zip_with([left.vectorized_axes, right.vectorized_axes], fn
-          [{k, 1}, {k, v}] ->
-            {k, v}
-
-          [{k, v}, {k, 1}] ->
-            {k, v}
-
-          [{k, v}, {k, v}] ->
-            {k, v}
-        end)
-
       {left, right} =
         case {left.shape, right.shape} do
           {{}, {}} ->
@@ -4217,65 +4716,20 @@ defmodule Nx do
             {left, right}
         end
 
-      devec_left =
-        devectorize(%{
-          left
-          | vectorized_axes: Enum.map(left.vectorized_axes, fn {_, v} -> {nil, v} end)
-        })
+      devec_left = devectorize(left, keep_names: false)
+      devec_right = devectorize(right, keep_names: false)
 
-      devec_right =
-        devectorize(%{
-          right
-          | vectorized_axes: Enum.map(right.vectorized_axes, fn {_, v} -> {nil, v} end)
-        })
+      vectorized_axes =
+        Enum.zip_with(left.vectorized_axes, right.vectorized_axes, fn {name, s1}, {name, s2} ->
+          {name, Kernel.max(s1, s2)}
+        end)
 
       devec_left
       |> fun.(devec_right)
-      |> revectorize_and_validate_sizes(vectorized_axes)
+      |> vectorize(vectorized_axes)
     else
       fun.(left, right)
     end
-  end
-
-  defp revectorize_and_validate_sizes({t1, t2}, []), do: {t1, t2}
-
-  defp revectorize_and_validate_sizes({t1, t2}, kw) do
-    {revectorize_and_validate_sizes(t1, kw), revectorize_and_validate_sizes(t2, kw)}
-  end
-
-  defp revectorize_and_validate_sizes(tensor, []), do: tensor
-
-  defp revectorize_and_validate_sizes(
-         %T{vectorized_axes: [], shape: shape, names: names} = tensor,
-         names_and_sizes_kw,
-         accept_one_sized_axis \\ false
-       ) do
-    shape_l = Tuple.to_list(shape)
-    n = length(names_and_sizes_kw)
-
-    {vectorized_axes, base_axes} = Enum.split(shape_l, n)
-
-    out_shape = List.to_tuple(base_axes)
-
-    vectorized_axes =
-      Enum.zip_with([vectorized_axes, names_and_sizes_kw], fn
-        [1, {name, _}] when accept_one_sized_axis ->
-          {name, 1}
-
-        [axis_size, {name, 1}] when accept_one_sized_axis ->
-          {name, axis_size}
-
-        [axis_size, {name, axis_size}] ->
-          {name, axis_size}
-
-        [axis_size, {name, expected_size}] ->
-          raise ArgumentError,
-                "expected revectorized axis #{inspect(name)} to have size #{inspect(expected_size)}, got: #{inspect(axis_size)}"
-      end)
-
-    out_names = Enum.drop(names, n)
-
-    %T{tensor | names: out_names, vectorized_axes: vectorized_axes, shape: out_shape}
   end
 
   ## Element-wise binary ops
@@ -7334,14 +7788,51 @@ defmodule Nx do
 
   ### Vectorized tensors
 
-      iex> t = Nx.vectorize(Nx.tensor([[1, 2], [3, 4]]), :x)
-      iex> Nx.sum(t, axes: [0], keep_axes: true)
+      iex> t = Nx.tensor([[[[1, 2]], [[3, 4]]], [[[5, 6]], [[7, 8]]]]) |> Nx.vectorize(:x) |> Nx.vectorize(:y)
       #Nx.Tensor<
-        vectorized[x: 2]
-        s64[1]
+        vectorized[x: 2][y: 2]
+        s64[1][2]
         [
-          [3],
-          [7]
+          [
+            [
+              [1, 2]
+            ],
+            [
+              [3, 4]
+            ]
+          ],
+          [
+            [
+              [5, 6]
+            ],
+            [
+              [7, 8]
+            ]
+          ]
+        ]
+      >
+      iex> Nx.sum(t)
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        s64
+        [
+          [3, 7],
+          [11, 15]
+        ]
+      >
+      iex> Nx.sum(t, axes: [0])
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        s64[2]
+        [
+          [
+            [1, 2],
+            [3, 4]
+          ],
+          [
+            [5, 6],
+            [7, 8]
+          ]
         ]
       >
 
@@ -7445,11 +7936,38 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+      iex> t = Nx.iota({2, 5}, vectorized_axes: [x: 2])
+      iex> Nx.mean(t)
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32
+        [4.5, 4.5]
+      >
+      iex> Nx.mean(t, axes: [0])
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32[5]
+        [
+          [2.5, 3.5, 4.5, 5.5, 6.5],
+          [2.5, 3.5, 4.5, 5.5, 6.5]
+        ]
+      >
+      iex> Nx.mean(t, axes: [1])
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32[2]
+        [
+          [2.0, 7.0],
+          [2.0, 7.0]
+        ]
+      >
+
   """
   @doc type: :aggregation, from_backend: false
   def mean(tensor, opts \\ []) do
     %T{shape: shape, names: names} = tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
 
     mean_den =
       if axes = opts[:axes] do
@@ -7545,15 +8063,43 @@ defmodule Nx do
           ]
         ]
       >
+
+  ### Vectorized tensors
+
+      iex> t = Nx.tensor([[1, 2, 3], [1, 1, 1]]) |> Nx.vectorize(:x)
+      #Nx.Tensor<
+        vectorized[x: 2]
+        s64[3]
+        [
+          [1, 2, 3],
+          [1, 1, 1]
+        ]
+      >
+      iex> w = Nx.tensor([[1, 1, 1], [0, 0, 1]]) |> Nx.vectorize(:y)
+      #Nx.Tensor<
+        vectorized[y: 2]
+        s64[3]
+        [
+          [1, 1, 1],
+          [0, 0, 1]
+        ]
+      >
+      iex> Nx.weighted_mean(t, w)
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        f32
+        [
+          [2.0, 3.0],
+          [1.0, 1.0]
+        ]
+      >
+
   """
   @doc type: :aggregation, from_backend: false
   def weighted_mean(tensor, weights, opts \\ []) do
     opts = keyword!(opts, [:axes, keep_axes: false])
     %T{shape: shape, names: names} = tensor = to_tensor(tensor)
     %T{shape: weights_shape} = weights = to_tensor(weights)
-
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    Nx.Shared.raise_vectorized_not_implemented_yet(weights, __ENV__.function)
 
     axes =
       if opts[:axes] do
@@ -8236,9 +8782,11 @@ defmodule Nx do
       opts = keyword!(opts, [:axes, keep_axes: false])
       keep_axes = opts[:keep_axes]
 
+      axes = opts[:axes]
+
       {shape, names, axes} =
         cond do
-          axes = opts[:axes] ->
+          not is_nil(axes) ->
             axes = Nx.Shape.normalize_axes(shape, axes, names, offset)
             {new_shape, new_names} = Nx.Shape.contract(shape, axes, names, keep_axes)
             {new_shape, new_names, axes}
@@ -8256,7 +8804,7 @@ defmodule Nx do
               end)
               |> List.to_tuple()
 
-            {output_shape, names, count_up(tuple_size(shape), offset)}
+            {output_shape, names, count_up(tuple_size(shape) - offset, offset)}
 
           true ->
             output_shape =
@@ -8267,7 +8815,7 @@ defmodule Nx do
 
             axes =
               if offset != 0 do
-                count_up(tuple_size(shape), offset)
+                count_up(tuple_size(shape) - offset, offset)
               end
 
             {output_shape, List.duplicate(nil, offset), axes}
@@ -8595,7 +9143,7 @@ defmodule Nx do
             {new_shape, new_names} =
               Nx.Shape.contract(
                 shape,
-                count_up(tuple_size(shape), offset),
+                count_up(tuple_size(shape) - offset, offset),
                 names,
                 opts[:keep_axis]
               )
@@ -9850,15 +10398,31 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  `map/3` behaves the same as with non-vectorized tensors, applying
+  `fun` in an element-wise fashion.
+
+      iex> Nx.map(Nx.tensor([[1, 2, 3], [4, 5, 6]]) |> Nx.vectorize(:x), [type: :f64], &Nx.add(&1, 1))
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f64[3]
+        [
+          [2.0, 3.0, 4.0],
+          [5.0, 6.0, 7.0]
+        ]
+      >
   """
   @doc type: :element
   def map(tensor, opts \\ [], fun) do
-    %T{type: type} = tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    opts = keyword!(opts, type: type)
-    output_type = Nx.Type.normalize!(opts[:type])
-    out = %{tensor | type: output_type}
-    impl!(tensor).map(out, tensor, opts, fun)
+    apply_vectorized(tensor, fn tensor ->
+      %T{type: type} = tensor
+
+      opts = keyword!(opts, type: type)
+      output_type = Nx.Type.normalize!(opts[:type])
+      out = %{tensor | type: output_type}
+      impl!(tensor).map(out, tensor, opts, fun)
+    end)
   end
 
   ## Matrix ops
@@ -10319,14 +10883,49 @@ defmodule Nx do
         ]
       >
 
+  ## Vectorized tensors
+
+  Because `outer/2` is built on top of other
+
+      iex> x = Nx.tensor([[1, 2, 3], [0, -1, -2]], names: [nil, :a]) |> Nx.vectorize(:x)
+      iex> y = Nx.tensor([[10, 20], [-10, -20]], names: [nil, :b]) |> Nx.vectorize(:y)
+      iex> Nx.outer(x, y)
+      #Nx.Tensor<
+        vectorized[x: 2][y: 2]
+        s64[a: 3][b: 2]
+        [
+          [
+            [
+              [10, 20],
+              [20, 40],
+              [30, 60]
+            ],
+            [
+              [-10, -20],
+              [-20, -40],
+              [-30, -60]
+            ]
+          ],
+          [
+            [
+              [0, 0],
+              [-10, -20],
+              [-20, -40]
+            ],
+            [
+              [0, 0],
+              [10, 20],
+              [20, 40]
+            ]
+          ]
+        ]
+      >
+
   """
   @doc type: :ndim
   def outer(t1, t2) do
-    %{names: n1} = t1 = to_tensor(t1)
-    %{names: n2} = t2 = to_tensor(t2)
-
-    Nx.Shared.raise_vectorized_not_implemented_yet(t1, __ENV__.function)
-    Nx.Shared.raise_vectorized_not_implemented_yet(t2, __ENV__.function)
+    %T{names: n1} = t1 = to_tensor(t1)
+    %T{names: n2} = t2 = to_tensor(t2)
 
     names =
       case {n1, n2} do
@@ -10991,30 +11590,50 @@ defmodule Nx do
           [4.0, 4.0, 4.0]
         ]
       >
+
+  ## Vectorized tensors
+
+  Only the main input tensor is allowed to be vectorized. `min` and `max` threshold tensors
+  must be unvectorized scalar tensors.
+
+      iex> t = Nx.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], type: :f32, names: [nil, :y]) |> Nx.vectorize(:x)
+      iex> Nx.clip(t, 1, 4)
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32[y: 3]
+        [
+          [1.0, 2.0, 3.0],
+          [4.0, 4.0, 4.0]
+        ]
+      >
   """
   @doc type: :element
   def clip(tensor, min, max) do
-    %T{type: type} = tensor = to_tensor(tensor)
-    %T{type: min_type, shape: min_shape} = min = to_tensor(min)
-    %T{type: max_type, shape: max_shape} = max = to_tensor(max)
+    apply_vectorized(tensor, fn tensor ->
+      %T{type: type} = tensor
 
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
-    Nx.Shared.raise_vectorized_not_implemented_yet(min, __ENV__.function)
-    Nx.Shared.raise_vectorized_not_implemented_yet(max, __ENV__.function)
+      %T{type: min_type, shape: min_shape, vectorized_axes: min_vectorized_axes} =
+        min = to_tensor(min)
 
-    if min_shape != {} do
-      raise ArgumentError, "min value must be a scalar shape, got: #{inspect(min_shape)}"
-    end
+      %T{type: max_type, shape: max_shape, vectorized_axes: max_vectorized_axes} =
+        max = to_tensor(max)
 
-    if max_shape != {} do
-      raise ArgumentError, "max value must be a scalar shape, got: #{inspect(max_shape)}"
-    end
+      if not (min_shape == {} and min_vectorized_axes == []) do
+        raise ArgumentError,
+              "min value must be a non-vectorized scalar shape, got shape #{inspect(min_shape)} and vectorized axes #{inspect(min_vectorized_axes)}"
+      end
 
-    output_type = Nx.Type.merge(type, Nx.Type.merge(min_type, max_type))
+      if not (max_shape == {} and max_vectorized_axes == []) do
+        raise ArgumentError,
+              "max value must be a non-vectorized scalar shape, got shape #{inspect(max_shape)} and vectorized axes #{inspect(max_vectorized_axes)}"
+      end
 
-    Nx.Shared.raise_complex_not_supported(output_type, :clip, 2)
+      output_type = Nx.Type.merge(type, Nx.Type.merge(min_type, max_type))
 
-    impl!(tensor).clip(%{tensor | type: output_type}, tensor, min, max)
+      Nx.Shared.raise_complex_not_supported(output_type, :clip, 2)
+
+      impl!(tensor).clip(%{tensor | type: output_type}, tensor, min, max)
+    end)
   end
 
   @doc """
@@ -12523,7 +13142,7 @@ defmodule Nx do
         |> new_byte_order(size, endianness)
         |> from_binary(type)
         |> reshape(flat_shape, names: names)
-        |> revectorize_and_validate_sizes(vectorized_axes)
+        |> vectorize(vectorized_axes)
 
       {:container, container} ->
         {deserialized, :ok} =
@@ -12814,12 +13433,20 @@ defmodule Nx do
           [0.25]
         ]
       >
+
+  ### Vectorized tensors
+
+      iex> Nx.variance(Nx.tensor([[1, 2], [0, 4]]) |> Nx.vectorize(:x))
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32
+        [0.25, 4.0]
+      >
   """
   @doc type: :aggregation
   @spec variance(tensor :: Nx.Tensor.t(), opts :: Keyword.t()) :: Nx.Tensor.t()
   def variance(tensor, opts \\ []) do
     %T{shape: shape, names: names} = tensor = to_tensor(tensor)
-    Nx.Shared.raise_vectorized_not_implemented_yet(tensor, __ENV__.function)
     opts = keyword!(opts, [:axes, ddof: 0, keep_axes: false])
     axes = opts[:axes]
     {ddof, opts} = Keyword.pop!(opts, :ddof)
@@ -12893,6 +13520,15 @@ defmodule Nx do
         [
           [7.628073215484619]
         ]
+      >
+
+  ### Vectorized tensors
+
+      iex> Nx.standard_deviation(Nx.tensor([[1, 2], [0, 4]]) |> Nx.vectorize(:x))
+      #Nx.Tensor<
+        vectorized[x: 2]
+        f32
+        [0.5, 2.0]
       >
   """
   @doc type: :aggregation
