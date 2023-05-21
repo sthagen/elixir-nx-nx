@@ -2140,6 +2140,14 @@ defmodule NxTest do
     end
   end
 
+  describe "take" do
+    test "accepts scalar and number as index" do
+      assert Nx.take(Nx.iota({4}), 2) == Nx.tensor(2)
+      assert Nx.take(Nx.iota({4}), Nx.tensor(2)) == Nx.tensor(2)
+      assert Nx.take(Nx.iota({4}), Nx.tensor([0, 2])) == Nx.tensor([0, 2])
+    end
+  end
+
   describe "take_diagonal/2" do
     test "extracts valid diagonal given no offset" do
       diag =
@@ -2689,6 +2697,14 @@ defmodule NxTest do
       right = Nx.iota({4}, backend: Nx.Defn.Expr) |> Nx.sin()
 
       assert inspect(left) == inspect(right)
+    end
+  end
+
+  describe "linspace/3" do
+    test "works for :f64 (bug fix: https://github.com/elixir-nx/nx/issues/1222)" do
+      linear = Nx.linspace(0.0, 0.5, n: 6, type: :f64)
+      expected_linear = Nx.tensor([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], type: :f64)
+      assert_all_close(linear, expected_linear, atol: 1.0e-15, rtol: 1.0e-15)
     end
   end
 
