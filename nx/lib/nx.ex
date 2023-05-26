@@ -897,6 +897,16 @@ defmodule Nx do
     %T{shape: shape, type: type, names: names, data: %Nx.TemplateBackend{}}
   end
 
+  for t <- [:u8, :u16, :u32, :u64, :s8, :s16, :s32, :s64, :bf16, :f16, :f32, :f64] do
+    @doc """
+    Short-hand function for creating tensor of type `#{t}`.
+
+    This is just an alias for `Nx.tensor(tensor, type: #{t})`.
+    """
+    @doc type: :creation
+    def unquote(t)(tensor), do: Nx.tensor(tensor, type: unquote(t))
+  end
+
   @doc """
   Converts a tensor (or tuples and maps of tensors) to tensor templates.
 
@@ -2481,9 +2491,24 @@ defmodule Nx do
         [Inf, NaN]
       >
 
+  If the input is a numerical constant instead of a tensor, this is an
+  alias to `Nx.tensor(number, type: type)`. In the example below,
+  notice how precision is only lost if we pass a type which can't
+  represent the numerical input:
+
+      iex> Nx.as_type(1.0e-128, :f32)
+      #Nx.Tensor<
+        f32
+        0.0
+      >
+      iex> Nx.as_type(1.0e-128, :f64)
+      #Nx.Tensor<
+        f64
+        1.0e-128
+      >
   """
   @doc type: :type
-  def as_type(tensor, type) do
+  def as_type(%T{} = tensor, type) do
     tensor = to_tensor(tensor)
     new_type = Nx.Type.normalize!(type)
 
@@ -2495,6 +2520,8 @@ defmodule Nx do
       end)
     end
   end
+
+  def as_type(number, type) when is_tensor(number), do: tensor(number, type: type)
 
   @doc """
   Changes the type of a tensor, using a bitcast.
@@ -7859,7 +7886,7 @@ defmodule Nx do
     t = type(real) |> Nx.Type.merge(type(imag)) |> Nx.Type.to_complex()
 
     imag
-    |> multiply(Nx.Constants.i(type: t))
+    |> multiply(Nx.Constants.i(t))
     |> add(real)
   end
 
