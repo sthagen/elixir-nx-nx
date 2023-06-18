@@ -3265,6 +3265,156 @@ defmodule Nx do
     end)
   end
 
+  @doc ~S"""
+  Split a tensor into train and test subsets.
+
+  `split` must be defined so that there are no empty result tensors.
+  This means that `split` must be:
+
+    * an integer such that `0 < split` and `split < axis_size`
+    * a float such that `0.0 < split` and `ceil(axis_size * split) < axis_size`
+
+  ## Options
+
+    * `:axis` - The axis along which to split the tensor. Defaults to `0`.
+
+  ## Examples
+
+  All examples will operate on the same tensor so that it's easier to compare different configurations.
+
+      iex> t = Nx.tensor([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]])
+      iex> {left, right} = Nx.split(t, 2, axis: 0)
+      iex> left
+      #Nx.Tensor<
+        s64[2][4]
+        [
+          [0, 1, 2, 3],
+          [4, 5, 6, 7]
+        ]
+      >
+      iex> right
+      #Nx.Tensor<
+        s64[1][4]
+        [
+          [8, 9, 10, 11]
+        ]
+      >
+      iex> {left, right} = Nx.split(t, 2, axis: 1)
+      iex> left
+      #Nx.Tensor<
+        s64[3][2]
+        [
+          [0, 1],
+          [4, 5],
+          [8, 9]
+        ]
+      >
+      iex> right
+      #Nx.Tensor<
+        s64[3][2]
+        [
+          [2, 3],
+          [6, 7],
+          [10, 11]
+        ]
+      >
+
+      iex> t = Nx.tensor([[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11]])
+      iex> {left, right} = Nx.split(t, 0.5, axis: 0)
+      iex> left
+      #Nx.Tensor<
+        s64[2][4]
+        [
+          [0, 1, 2, 3],
+          [4, 5, 6, 7]
+        ]
+      >
+      iex> right
+      #Nx.Tensor<
+        s64[1][4]
+        [
+          [8, 9, 10, 11]
+        ]
+      >
+      iex> {left, right} = Nx.split(t, 0.75, axis: 1)
+      iex> left
+      #Nx.Tensor<
+        s64[3][3]
+        [
+          [0, 1, 2],
+          [4, 5, 6],
+          [8, 9, 10]
+        ]
+      >
+      iex> right
+      #Nx.Tensor<
+        s64[3][1]
+        [
+          [3],
+          [7],
+          [11]
+        ]
+      >
+
+  Negative indices are also accepted, in the same fashion as `Enum.split/2`.
+
+      iex> t = Nx.tensor([1, 2, 3, 4])
+      iex> {left, right} = Nx.split(t, -1)
+      iex> left
+      #Nx.Tensor<
+        s64[3]
+        [1, 2, 3]
+      >
+      iex> right
+      #Nx.Tensor<
+        s64[1]
+        [4]
+      >
+  """
+  @doc type: :indexed
+  def split(tensor, split, opts \\ [])
+
+  def split(tensor, split, opts) do
+    tensor = to_tensor(tensor)
+    opts = keyword!(opts, axis: 0)
+    axis = Keyword.fetch!(opts, :axis)
+
+    axis = Nx.Shape.normalize_axis(tensor.shape, axis, tensor.names)
+    axis_size = axis_size(tensor, axis)
+
+    # only used in case the split is a float
+    float_split_index = Kernel.ceil(split * axis_size)
+
+    {split_index, remainder_length} =
+      cond do
+        is_integer(split) and split > 0 and split < axis_size ->
+          {split, axis_size - split}
+
+        is_integer(split) and split < 0 and split > -axis_size ->
+          {axis_size + split, Kernel.abs(split)}
+
+        is_integer(split) ->
+          raise ArgumentError,
+                "split must be an integer greater than zero and less than the length of the given axis"
+
+        is_float(split) and float_split_index > 0 and float_split_index < axis_size ->
+          {float_split_index, axis_size - float_split_index}
+
+        is_float(split) ->
+          raise ArgumentError,
+                "split must be a float such that 0 < split and ceil(split * axis_size) < 1"
+
+        true ->
+          raise ArgumentError,
+                "invalid split received, expected a float or an integer, got: #{inspect(split)}"
+      end
+
+    {
+      slice_along_axis(tensor, 0, split_index, axis: axis),
+      slice_along_axis(tensor, split_index, remainder_length, axis: axis)
+    }
+  end
+
   @doc """
   Broadcasts `tensor` to the given `broadcast_shape`.
 
@@ -7491,6 +7641,12 @@ defmodule Nx do
     [%T{vectorized_axes: vectorized_axes} = target, indices, updates] =
       broadcast_vectors([target, indices, updates])
 
+    idx_type = type(indices)
+
+    unless Nx.Type.integer?(idx_type) do
+      raise ArgumentError, "indices must be an integer tensor, got type: #{inspect(idx_type)}"
+    end
+
     type = binary_type(target, updates)
 
     Nx.Shape.indexed(target, indices, updates)
@@ -10978,6 +11134,82 @@ defmodule Nx do
       Nx.Shared.optional(op, [tensor, [axis: axis, reverse: reverse]], tensor, fn tensor, opts ->
         associative_scan(tensor, reduce_fun, opts)
       end)
+    end)
+  end
+
+  @doc """
+  Calculate the n-th discrete difference along the given axis.
+
+  The first difference is given by $out_i = a_{i+1} - a_i$ along the given axis,
+  higher differences are calculated by using `diff` recursively.
+
+  ## Options
+
+    * `:order` - the number of times to perform the difference. Defaults to `1`
+    * `:axis` - the axis to perform the difference along. Defaults to `-1`
+
+  ## Examples
+
+      iex> Nx.diff(Nx.tensor([1, 2, 4, 7, 0]))
+      #Nx.Tensor<
+        s64[4]
+        [1, 2, 3, -7]
+      >
+
+      iex> Nx.diff(Nx.tensor([1, 2, 4, 7, 0]), order: 2)
+      #Nx.Tensor<
+        s64[3]
+        [1, 1, -10]
+      >
+
+      iex> Nx.diff(Nx.tensor([[1, 3, 6, 10], [0, 5, 6, 8]]))
+      #Nx.Tensor<
+        s64[2][3]
+        [
+          [2, 3, 4],
+          [5, 1, 2]
+        ]
+      >
+
+      iex> Nx.diff(Nx.tensor([[1, 3, 6, 10], [0, 5, 6, 8]]), axis: 0)
+      #Nx.Tensor<
+        s64[1][4]
+        [
+          [-1, 2, 0, -2]
+        ]
+      >
+
+      iex> Nx.diff(Nx.tensor([1, 2, 4, 7, 0]), order: 0)
+      #Nx.Tensor<
+        s64[5]
+        [1, 2, 4, 7, 0]
+      >
+
+      iex> Nx.diff(Nx.tensor([1, 2, 4, 7, 0]), order: -1)
+      ** (ArgumentError) order must be non-negative but got: -1
+  """
+  @doc type: :ndim
+  def diff(tensor, opts \\ []) do
+    opts = keyword!(opts, order: 1, axis: -1)
+    %T{shape: shape, names: names} = tensor = to_tensor(tensor)
+    n = opts[:order]
+    axis = Nx.Shape.normalize_axis(shape, opts[:axis], names)
+
+    if rank(tensor) == 0 do
+      raise ArgumentError, "cannot compute diff of a scalar"
+    end
+
+    if n < 0 do
+      raise ArgumentError, "order must be non-negative but got: #{inspect(n)}"
+    end
+
+    axis_size = Nx.axis_size(tensor, axis)
+
+    Enum.reduce(0..(n - 1)//1, tensor, fn x, acc ->
+      subtract(
+        slice_along_axis(acc, 1, axis_size - x - 1, axis: axis),
+        slice_along_axis(acc, 0, axis_size - x - 1, axis: axis)
+      )
     end)
   end
 
@@ -14586,6 +14818,9 @@ defmodule Nx do
   of the original tensor in the new sorted positions.
 
   If no axis is given, defaults to `0`.
+
+  See `take_along_axis/3` for examples on how to apply the
+  resulting indices from this function.
 
   ## Options
 

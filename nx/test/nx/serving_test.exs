@@ -53,12 +53,8 @@ defmodule Nx.ServingTest do
       assert Nx.Serving.run(serving, batch) == Nx.tensor([[2, 4, 6]])
     end
 
-    test "with container" do
-      serving =
-        Nx.Serving.new(fn opts ->
-          Nx.Defn.jit(fn {a, b} -> {Nx.multiply(a, 2), Nx.divide(b, 2)} end, opts)
-        end)
-
+    test "with container (and jit)" do
+      serving = Nx.Serving.jit(fn {a, b} -> {Nx.multiply(a, 2), Nx.divide(b, 2)} end)
       batch = Nx.Batch.concatenate([{Nx.tensor([1, 2, 3]), Nx.tensor([4, 5, 6])}])
       assert Nx.Serving.run(serving, batch) == {Nx.tensor([2, 4, 6]), Nx.tensor([2, 2.5, 3])}
     end
@@ -374,8 +370,7 @@ defmodule Nx.ServingTest do
 
     @tag :capture_log
     test "2=>shutdown=>1 (stacked)", config do
-      serving_pid =
-        execute_sync_supervised!(config, batch_timeout: 100, batch_size: 2, batch_timeout: 30_000)
+      serving_pid = execute_sync_supervised!(config, batch_timeout: 100, batch_size: 2)
 
       {_pid, ref1} =
         spawn_monitor(fn ->
@@ -652,6 +647,9 @@ defmodule Nx.ServingTest do
       assert_receive :spawned
 
       batch = Nx.Batch.concatenate([Nx.tensor([1, 2])])
+
+      # Make sure stray messages do not crash processing
+      send(self(), {:DOWN, make_ref(), :process, self(), :normal})
 
       assert Nx.Serving.batched_run({:distributed, config.test}, batch, preprocessing) ==
                Nx.tensor([2, 4])

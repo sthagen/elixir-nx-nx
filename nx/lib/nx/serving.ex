@@ -56,10 +56,12 @@ defmodule Nx.Serving do
 
   When defining a `Nx.Serving`, we can also customize how the data is
   batched by using the `client_preprocessing` as well as the result by
-  using `client_postprocessing` hooks. Let's give it another try:
+  using `client_postprocessing` hooks. Let's give it another try,
+  this time using `jit/2` to create the serving, which automatically
+  wraps the given function in `Nx.Defn.jit/2` for us:
 
       iex> serving = (
-      ...>   Nx.Serving.new(fn opts -> Nx.Defn.jit(&MyDefn.print_and_multiply/1, opts) end)
+      ...>   Nx.Serving.jit(&MyDefn.print_and_multiply/1)
       ...>   |> Nx.Serving.client_preprocessing(fn input -> {Nx.Batch.stack(input), :client_info} end)
       ...>   |> Nx.Serving.client_postprocessing(&{&1, &2, &3})
       ...> )
@@ -111,7 +113,7 @@ defmodule Nx.Serving do
 
       children = [
         {Nx.Serving,
-         serving: Nx.Serving.new(fn opts ->  Nx.Defn.jit(&MyDefn.print_and_multiply/1, opts) end),
+         serving: Nx.Serving.jit(&MyDefn.print_and_multiply/1),
          name: MyServing,
          batch_size: 10,
          batch_timeout: 100}
@@ -314,6 +316,15 @@ defmodule Nx.Serving do
 
   @axis 0
 
+  @process_keys [
+    :batch_size,
+    :batch_timeout,
+    :partitions,
+    :shutdown,
+    :hibernate_after,
+    :spawn_opt
+  ]
+
   @doc """
   The callback used to initialize the serving.
 
@@ -371,6 +382,18 @@ defmodule Nx.Serving do
   end
 
   @doc """
+  Creates a new serving by jitting the given `fun` with `defn_options`.
+
+  This is equivalent to:
+
+      new(fn opts -> Nx.Defn.jit(fun, opts) end, defn_options)
+
+  """
+  def jit(fun, defn_options \\ []) do
+    new(fn opts -> Nx.Defn.jit(fun, opts) end, defn_options)
+  end
+
+  @doc """
   Creates a new module-based serving.
 
   It expects a module and an argument that is given to its `init`
@@ -423,8 +446,8 @@ defmodule Nx.Serving do
   These are the same options as supported on `start_link/1`,
   except `:name` and `:serving` itself.
   """
-  def process_options(%Nx.Serving{} = serving, process_options) when is_list(process_options) do
-    %{serving | process_options: process_options}
+  def process_options(%Nx.Serving{} = serving, opts) when is_list(opts) do
+    %{serving | process_options: Keyword.validate!(opts, @process_keys)}
   end
 
   @doc """
@@ -511,11 +534,12 @@ defmodule Nx.Serving do
       workers (see `GenServer.start_link/3`)
   """
   def start_link(opts) do
+    opts = Keyword.validate!(opts, [:name, :serving] ++ @process_keys)
     name = Keyword.fetch!(opts, :name)
-    {%Nx.Serving{process_options: process_options} = serving, opts} = Keyword.pop!(opts, :serving)
+    serving = Keyword.fetch!(opts, :serving)
 
     opts =
-      Keyword.merge(process_options, opts, fn
+      Keyword.merge(serving.process_options, opts, fn
         k, v1, v2 when k == :batch_size and v1 != v2 ->
           raise ArgumentError,
                 "#{inspect(k)} has been set when starting an Nx.Serving process (#{inspect(v2)}) " <>
@@ -526,10 +550,11 @@ defmodule Nx.Serving do
           v2
       end)
 
-    {shutdown, opts} = Keyword.pop(opts, :shutdown, 30_000)
-    {partitions, opts} = Keyword.pop(opts, :partitions, false)
-    {batch_size, opts} = Keyword.pop(opts, :batch_size, 1)
-    {batch_timeout, opts} = Keyword.pop(opts, :batch_timeout, 100)
+    shutdown = Keyword.get(opts, :shutdown, 30_000)
+    partitions = Keyword.get(opts, :partitions, false)
+    batch_size = Keyword.get(opts, :batch_size, 1)
+    batch_timeout = Keyword.get(opts, :batch_timeout, 100)
+    process_options = Keyword.take(opts, [:name, :hibernate_after, :spawn_opt])
 
     supervisor = Module.concat(name, "Supervisor")
     task_supervisor = Module.concat(name, "TaskSupervisor")
@@ -539,7 +564,7 @@ defmodule Nx.Serving do
       {Task.Supervisor, name: task_supervisor},
       %{
         id: __MODULE__,
-        start: {GenServer, :start_link, [__MODULE__, arg, opts]},
+        start: {GenServer, :start_link, [__MODULE__, arg, process_options]},
         shutdown: shutdown
       }
     ]
@@ -726,10 +751,10 @@ defmodule Nx.Serving do
           {:DOWN, ^monitor_ref, _, _, {^ref, result}} ->
             result
 
-          {:DOWN, _, _, _, :noproc} ->
+          {:DOWN, ^monitor_ref, _, _, :noproc} ->
             distributed_batched_run_with_retries!(name, input, retries - 1)
 
-          {:DOWN, _, _, _, reason} ->
+          {:DOWN, ^monitor_ref, _, _, reason} ->
             exit(
               {reason, {__MODULE__, :distributed_batched_run, [name, input, [retries: retries]]}}
             )
