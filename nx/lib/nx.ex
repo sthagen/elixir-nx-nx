@@ -416,7 +416,8 @@ defmodule Nx do
   @type axes :: Nx.Tensor.axes()
   @type template :: Nx.Tensor.t(%Nx.TemplateBackend{})
 
-  @file_version 2
+  @file_prefix <<?n, ?x>>
+  @file_version 1
 
   @non_finite [:neg_infinity, :infinity, :nan]
 
@@ -14431,7 +14432,7 @@ defmodule Nx do
   Concatenates tensors along the given axis.
 
   Tensors can be a tuple or any `Nx.Container` or `Nx.LazyContainer`.
-  This means you can easily concatenate all columns in a datafrane
+  This means you can easily concatenate all columns in a dataframe
   and other data structures. For convenience, this function also allows
   a list of tensors to be given, which may be common outside of `defn`.
 
@@ -14630,7 +14631,7 @@ defmodule Nx do
   Stacks a list of tensors with the same shape along a new axis.
 
   Tensors can be a tuple or any `Nx.Container` or `Nx.LazyContainer`.
-  This means you can easily concatenate all columns in a datafrane
+  This means you can easily concatenate all columns in a dataframe
   and other data structures. For convenience, this function also allows
   a list of tensors to be given, which may be common outside of `defn`.
 
@@ -15192,29 +15193,49 @@ defmodule Nx do
   """
   @doc type: :conversion
   def serialize(tensor_or_container, opts \\ []) do
-    data_term = to_term(tensor_or_container)
-    term = {@file_version, System.endianness(), data_term}
-    :erlang.term_to_iovec(term, opts)
+    {term, {binaries, _offsets}} = to_term(tensor_or_container, {[], 0})
+    data = :erlang.term_to_iovec(term, opts)
+    endianness = endianness_to_byte(System.endianness())
+
+    [<<@file_prefix, @file_version, endianness, IO.iodata_length(data)::64>> | data] ++
+      Enum.reverse(binaries)
   end
 
-  defp to_term(tensor_or_container) do
+  defp to_term(tensor_or_container, {binaries, offset}) do
     case tensor_or_container do
       number when is_number(number) when is_struct(number, Complex) ->
         type = Nx.Type.infer(number)
-        {:tensor, {}, type, [], [], number_to_binary(number, type)}
+        binary = number_to_binary(number, type)
+        size = Kernel.byte_size(binary)
+        acc = {[binary | binaries], offset + size}
+        {{:t, {}, type, [], [], offset, size}, acc}
 
       %T{vectorized_axes: vectorized_axes} = tensor ->
         %{shape: shape, names: names} = devectorize(tensor)
-
         type = type(tensor)
         binary = to_binary(tensor)
-        {:tensor, shape, type, names, vectorized_axes, binary}
+        size = Kernel.byte_size(binary)
+        acc = {[binary | binaries], offset + size}
+        {{:t, shape, type, names, vectorized_axes, offset, size}, acc}
 
       other ->
         {module, pairs, meta} = Nx.Container.serialize(other)
-        {module, Enum.map(pairs, fn {k, v} -> {k, to_term(v)} end), meta}
+
+        {pairs, acc} =
+          Enum.map_reduce(pairs, {binaries, offset}, fn {k, v}, acc ->
+            {v, acc} = to_term(v, acc)
+            {{k, v}, acc}
+          end)
+
+        {{module, pairs, meta}, acc}
     end
   end
+
+  defp endianness_to_byte(:little), do: 0
+  defp endianness_to_byte(:big), do: 1
+
+  defp byte_to_endianness(0), do: :little
+  defp byte_to_endianness(1), do: :big
 
   @doc """
   Deserializes a serialized representation of a tensor or a container
@@ -15253,44 +15274,48 @@ defmodule Nx do
   def deserialize(data, opts \\ []) do
     data
     |> IO.iodata_to_binary()
-    |> :erlang.binary_to_term(opts)
-    |> from_term()
+    |> deserialize_binary(opts)
   end
 
-  defp from_term({2, endianness, term}), do: from_term_v2(term, endianness)
-  defp from_term({1, endianness, term}), do: from_term_v1(term, endianness)
-
-  defp from_term(_) do
-    raise ArgumentError, "unable to deserialize binary term to tensor"
+  defp deserialize_binary(
+         <<@file_prefix, @file_version, endianness, size::64, data::binary-size(size),
+           buffers::binary>>,
+         opts
+       ) do
+    term = :erlang.binary_to_term(data, opts)
+    from_buffers(term, byte_to_endianness(endianness), buffers)
   end
 
-  defp from_term_v2(term, endianness) do
+  defp deserialize_binary(<<@file_prefix, version, _::binary>>, _opts) do
+    raise ArgumentError, "cannot deserialize Nx format v#{version}"
+  end
+
+  # TODO: Remove me in future releases (format for Nx v0.5 and earlier).
+  defp deserialize_binary(binary, opts) do
+    {1, endianness, term} = :erlang.binary_to_term(binary, opts)
+    from_term(term, endianness)
+  end
+
+  defp from_buffers(term, endianness, buffers) do
     case term do
-      {:tensor, flat_shape, {_, size} = type, names, vectorized_axes, binary} ->
-        binary
-        |> new_byte_order(size, endianness)
+      {:t, flat_shape, {_, type_size} = type, names, vectorized_axes, offset, size} ->
+        buffers
+        |> binary_part(offset, size)
+        |> new_byte_order(type_size, endianness)
         |> from_binary(type)
         |> reshape(flat_shape, names: names)
         |> vectorize(vectorized_axes)
 
-      {:container, container} ->
-        {deserialized, :ok} =
-          Nx.Container.traverse(container, :ok, fn container_elem, :ok ->
-            {from_term_v2(container_elem, endianness), :ok}
-          end)
-
-        deserialized
-
       {module, pairs, metadata} ->
-        pairs = Enum.map(pairs, fn {k, v} -> {k, from_term_v2(v, endianness)} end)
+        pairs = Enum.map(pairs, fn {k, v} -> {k, from_buffers(v, endianness, buffers)} end)
         module.deserialize(pairs, metadata)
 
       _ ->
-        raise ArgumentError, "unable to deserialize binary term to tensor"
+        raise ArgumentError, "unable to deserialize term to tensor: #{inspect(term)}"
     end
   end
 
-  defp from_term_v1(term, endianness) do
+  defp from_term(term, endianness) do
     case term do
       {:tensor, shape, {_, size} = type, names, binary} ->
         binary
@@ -15301,13 +15326,13 @@ defmodule Nx do
       {:container, container} ->
         {deserialized, :ok} =
           Nx.Container.traverse(container, :ok, fn container_elem, :ok ->
-            {from_term_v1(container_elem, endianness), :ok}
+            {from_term(container_elem, endianness), :ok}
           end)
 
         deserialized
 
       {module, pairs, metadata} ->
-        pairs = Enum.map(pairs, fn {k, v} -> {k, from_term_v1(v, endianness)} end)
+        pairs = Enum.map(pairs, fn {k, v} -> {k, from_term(v, endianness)} end)
         module.deserialize(pairs, metadata)
 
       _ ->
@@ -15385,6 +15410,18 @@ defmodule Nx do
         {byte_order, type} = parse_type(dtype)
         {byte_order, type, parse_shape(shape), true}
     end
+  end
+
+  defp parse_type(<<?', ?|, type, ?1, ?'>>) do
+    type =
+      case type do
+        ?u -> :u
+        ?i -> :s
+        ?f -> :f
+        _ -> raise "unsupported numpy type: #{type}"
+      end
+
+    {System.endianness(), {type, 8}}
   end
 
   defp parse_type(<<?', byte_order, type, size, ?'>>) do
@@ -16463,5 +16500,128 @@ defmodule Nx do
         t
       end)
     end
+  end
+
+  @doc """
+  Returns the logarithm of the sum of the exponentials of tensor elements.
+
+  If the `:axes` option is given, it aggregates over
+  the given dimensions, effectively removing them.
+  `axes: [0]` implies aggregating over the highest order
+  dimension and so forth. If the axis is negative, then
+  counts the axis from the back. For example, `axes: [-1]`
+  will always aggregate all rows.
+
+  You may optionally set `:keep_axes` to true, which will
+  retain the rank of the input tensor by setting the reduced
+  axes to size 1.
+
+  Exponentials can be scaled before summation by multiplying
+  them with `:exp_scaling_factor` option. It must be of the same shape
+  as the input tensor or broadcastable to it.
+
+  ## Examples
+
+      iex> Nx.logsumexp(Nx.tensor([1, 2, 3, 4, 5, 6]))
+      #Nx.Tensor<
+        f32
+        6.456193447113037
+      >
+
+      iex> Nx.logsumexp(Nx.tensor([1, 2, 3, 4, 5, 6]), exp_scaling_factor: 0.5)
+      #Nx.Tensor<
+        f32
+        5.7630462646484375
+      >
+
+      iex> t = Nx.tensor([1, 2, 3, 4, 5, 6])
+      iex> a = Nx.tensor([-1, -1, -1, 1, 1, 1])
+      iex> Nx.logsumexp(t, exp_scaling_factor: a)
+      #Nx.Tensor<
+        f32
+        6.356536865234375
+      >
+
+      iex> Nx.logsumexp(Nx.tensor([[1, 2], [3, 4], [5, 6]]))
+      #Nx.Tensor<
+        f32
+        6.456193447113037
+      >
+
+  ### Aggregating over an axis
+
+      iex> t = Nx.tensor([[1, 2], [3, 4], [5, 6]], names: [:x, :y])
+      iex> Nx.logsumexp(t, axes: [:x])
+      #Nx.Tensor<
+        f32[y: 2]
+        [5.1429314613342285, 6.1429314613342285]
+      >
+
+      iex> t = Nx.tensor([[1, 2], [3, 4], [5, 6]], names: [:x, :y])
+      iex> Nx.logsumexp(t, axes: [:y])
+      #Nx.Tensor<
+        f32[x: 3]
+        [2.3132617473602295, 4.31326150894165, 6.31326150894165]
+      >
+
+      iex> t = Nx.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], names: [:x, :y, :z])
+      iex> Nx.logsumexp(t, axes: [:x, :z])
+      #Nx.Tensor<
+        f32[y: 2]
+        [6.331411361694336, 8.331411361694336]
+      >
+
+  ### Keeping axes
+
+      iex> t = Nx.tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]], names: [:x, :y, :z])
+      iex> Nx.logsumexp(t, axes: [:x, :z], keep_axes: true)
+      #Nx.Tensor<
+        f32[x: 1][y: 2][z: 1]
+        [
+          [
+            [6.331411361694336],
+            [8.331411361694336]
+          ]
+        ]
+      >
+
+  ### Vectorized tensors
+
+      iex> t = Nx.vectorize(Nx.tensor([[1, 2], [3, 4], [5, 6]]), :x)
+      iex> Nx.logsumexp(t, axes: [0], keep_axes: true)
+      #Nx.Tensor<
+        vectorized[x: 3]
+        f32[1]
+        [
+          [2.3132617473602295],
+          [4.31326150894165],
+          [6.31326150894165]
+        ]
+      >
+  """
+  @doc type: :aggregation
+  def logsumexp(tensor, opts \\ []) do
+    type = type(tensor)
+    opts = keyword!(opts, [:axes, :exp_scaling_factor, :keep_axes])
+    axes = opts[:axes]
+    keep_axes = opts[:keep_axes]
+    max = reduce_max(tensor, axes: axes, keep_axes: true)
+    infinity_mask = is_infinity(max)
+    max = select(infinity_mask, Nx.tensor(0, type: type), max)
+    exponentials = tensor |> subtract(max) |> exp()
+
+    exponentials =
+      if exp_scaling_factor = opts[:exp_scaling_factor] do
+        multiply(exp_scaling_factor, exponentials)
+      else
+        exponentials
+      end
+
+    max = if keep_axes, do: max, else: squeeze(max, axes: axes)
+
+    exponentials
+    |> sum(axes: axes, keep_axes: keep_axes)
+    |> log()
+    |> add(max)
   end
 end
