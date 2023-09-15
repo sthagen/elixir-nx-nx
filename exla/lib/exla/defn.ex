@@ -653,6 +653,10 @@ defmodule EXLA.Defn do
 
   ## to_operator shape
 
+  defp to_operator(:reshape, [%Value{} = op], %{shape: shape}, _state) do
+    Value.reshape(op, shape)
+  end
+
   defp to_operator(:reshape, [op], %{shape: shape}, _state) do
     EXLA.Op.reshape(op, shape)
   end
@@ -661,8 +665,17 @@ defmodule EXLA.Defn do
     EXLA.Op.pad(to_type(op, type), to_type(value, type), padding_config)
   end
 
+  defp to_operator(:broadcast, [%Value{} = op, _shape, axes], ans, _state) do
+    out_shape = EXLA.Shape.make_shape(ans.type, ans.shape)
+    Value.broadcast_in_dim(op, out_shape, List.to_tuple(axes))
+  end
+
   defp to_operator(:broadcast, [op, _shape, axes], ans, _state) do
     EXLA.Op.broadcast_in_dim(op, ans.shape, List.to_tuple(axes))
+  end
+
+  defp to_operator(:transpose, [%Value{} = op, axes], _ans, _state) do
+    Value.transpose(op, axes)
   end
 
   defp to_operator(:transpose, [op, axes], _ans, _state) do
@@ -684,6 +697,31 @@ defmodule EXLA.Defn do
 
   defp to_operator(:elem, [op, index], _ans, _state) do
     EXLA.Op.get_tuple_element(op, index)
+  end
+
+  defp to_operator(
+         :dot,
+         [
+           %Value{} = left,
+           contract_axes1,
+           batch_axes1,
+           %Value{} = right,
+           contract_axes2,
+           batch_axes2
+         ],
+         %{type: type, shape: shape},
+         state
+       ) do
+    precision = state.precision
+    output_shape = EXLA.Shape.make_shape(type, shape)
+
+    Value.dot_general(
+      output_shape,
+      left,
+      right,
+      {contract_axes1, batch_axes1, contract_axes2, batch_axes2},
+      precision
+    )
   end
 
   defp to_operator(
@@ -744,6 +782,29 @@ defmodule EXLA.Defn do
       batch_groups,
       state.precision
     )
+  end
+
+  defp to_operator(
+         :select,
+         [%Value{} = pred, %Value{} = on_true, %Value{} = on_false],
+         %{type: type, shape: shape},
+         _state
+       ) do
+    pred = to_type(pred, {:pred, 8})
+
+    out_shape = EXLA.Shape.make_shape(type, shape)
+
+    on_true =
+      on_true
+      |> to_type(type)
+      |> Value.broadcast_in_dim(out_shape, broadcast_axes(op_shape(on_true), shape))
+
+    on_false =
+      on_false
+      |> to_type(type)
+      |> Value.broadcast_in_dim(out_shape, broadcast_axes(op_shape(on_false), shape))
+
+    Value.select(pred, on_true, on_false)
   end
 
   defp to_operator(:select, [pred, on_true, on_false], %{type: type, shape: shape}, _state) do
@@ -1147,12 +1208,33 @@ defmodule EXLA.Defn do
     apply(EXLA.Lib, op, [state.builder, arg, [type: ans.type] ++ opts])
   end
 
+  defp to_operator(:clip, [%Value{} = operand, %Value{} = min, %Value{} = max], ans, _state) do
+    min = to_type(min, ans.type)
+    max = to_type(max, ans.type)
+    operand = to_type(operand, ans.type)
+
+    Value.clamp(operand, min, max)
+  end
+
   defp to_operator(:clip, [operand, min, max], ans, _state) do
     min = to_type(min, ans.type)
     max = to_type(max, ans.type)
     operand = to_type(operand, ans.type)
 
     EXLA.Op.clamp(operand, min, max)
+  end
+
+  defp to_operator(:slice, [%Value{} = tensor, start_indices, lengths, strides], ans, _state) do
+    all_static? = Enum.all?(start_indices, &is_integer/1)
+
+    if all_static? do
+      limit_indices = Enum.zip_with(start_indices, lengths, fn i, len -> i + len end)
+      Value.slice(tensor, start_indices, limit_indices, strides)
+    else
+      zeros = List.duplicate(0, tuple_size(ans.shape))
+      slice = Value.dynamic_slice(tensor, start_indices, lengths)
+      Value.slice(slice, zeros, lengths, strides)
+    end
   end
 
   defp to_operator(:slice, [tensor, start_indices, lengths, strides], ans, _state) do
@@ -1255,8 +1337,20 @@ defmodule EXLA.Defn do
     )
   end
 
+  defp to_operator(:reverse, [%Value{} = tensor, axes], _ans, _state) do
+    Value.reverse(tensor, axes)
+  end
+
   defp to_operator(:reverse, [tensor, axes], _ans, _state) do
     EXLA.Op.reverse(tensor, axes)
+  end
+
+  defp to_operator(:concatenate, [[%Value{} | _rest] = tensors, axis], ans, _state) do
+    tensors =
+      tensors
+      |> Enum.map(&to_type(&1, ans.type))
+
+    Value.concatenate(tensors, axis)
   end
 
   defp to_operator(:concatenate, [tensors, axis], ans, _state) do

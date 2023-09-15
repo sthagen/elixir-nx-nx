@@ -52,11 +52,34 @@ mlir::TensorType GetMLIRType(mlir::OpBuilder *builder, std::vector<tsl::int64> d
   return mlir::RankedTensorType::get(dims, type);
 }
 
+mlir::mhlo::DotDimensionNumbersAttr ConvertDotDimensionNumbersToAttr(mlir::OpBuilder *builder, const xla::DotDimensionNumbers &dotDimNumbers) {
+  std::vector<int64_t> lhsContractingVec(dotDimNumbers.lhs_contracting_dimensions().begin(),
+                                         dotDimNumbers.lhs_contracting_dimensions().end());
+  std::vector<int64_t> rhsContractingVec(dotDimNumbers.rhs_contracting_dimensions().begin(),
+                                         dotDimNumbers.rhs_contracting_dimensions().end());
+  std::vector<int64_t> lhsBatchVec(dotDimNumbers.lhs_batch_dimensions().begin(),
+                                   dotDimNumbers.lhs_batch_dimensions().end());
+  std::vector<int64_t> rhsBatchVec(dotDimNumbers.rhs_batch_dimensions().begin(),
+                                   dotDimNumbers.rhs_batch_dimensions().end());
+
+  return mlir::mhlo::DotDimensionNumbersAttr::get(
+    builder->getContext(),
+    lhsBatchVec,
+    rhsBatchVec,
+    lhsContractingVec,
+    rhsContractingVec
+  );
+}
+
 int MLIRFunction::get_mlir_type(ErlNifEnv *env, ERL_NIF_TERM term, mlir::Type *type) {
   auto builder = module_->builder();
   std::string type_str;
   if (!exla::nif::get(env, term, type_str)) return 1;
 
+  if (type_str == "pred") {
+    *type = builder->getIntegerType(1);
+    return 0;
+  }
   if (type_str == "u8") {
     *type = builder->getIntegerType(8, false);
     return 0;
@@ -107,6 +130,13 @@ int MLIRFunction::get_mlir_type(ErlNifEnv *env, ERL_NIF_TERM term, mlir::Type *t
   }
 
   return 1;
+}
+
+mlir::DenseIntElementsAttr Int64ToDenseIntElementsAttr(mlir::OpBuilder *builder, std::vector<int64_t> vec) {
+  int64_t num_entries[] = {static_cast<int64_t>(vec.size())};
+  auto type = mlir::RankedTensorType::get(llvm::ArrayRef(num_entries, 1), builder->getIntegerType(64));
+  auto dense_attr = mlir::DenseElementsAttr::get<int64_t>(type, llvm::ArrayRef<int64_t>(vec.data(), vec.size()));
+  return llvm::cast<mlir::DenseIntElementsAttr>(dense_attr);
 }
 
 MLIRFunction::MLIRFunction(MLIRModule *module, std::unique_ptr<mlir::func::FuncOp> func)
@@ -417,6 +447,62 @@ mlir::Value MLIRFunction::RsqrtOp(mlir::Value operand) {
   return module_->builder()->create<mlir::mhlo::RsqrtOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
+mlir::Value MLIRFunction::TransposeOp(mlir::Value operand, std::vector<int64_t> axes) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto axes_attr = Int64ToDenseIntElementsAttr(module_->builder(), axes);
+  return module_->builder()->create<mlir::mhlo::TransposeOp>(module_->builder()->getUnknownLoc(), operand, axes_attr);
+}
+
+mlir::Value MLIRFunction::ReshapeOp(mlir::Value operand, std::vector<int64_t> target_shape) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  mlir::RankedTensorType t_in = llvm::cast<mlir::RankedTensorType>(operand.getType());
+  mlir::RankedTensorType type = mlir::RankedTensorType::get(target_shape, t_in.getElementType());
+  return module_->builder()->create<mlir::mhlo::ReshapeOp>(module_->builder()->getUnknownLoc(), type, operand);
+}
+
+mlir::Value MLIRFunction::ReverseOp(mlir::Value operand, std::vector<int64_t> dims) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto dims_attr = Int64ToDenseIntElementsAttr(module_->builder(), dims);
+  return module_->builder()->create<mlir::mhlo::ReverseOp>(module_->builder()->getUnknownLoc(), operand, dims_attr);
+}
+
+mlir::Value MLIRFunction::SliceOp(mlir::Value operand, std::vector<int64_t> starts, std::vector<int64_t> limits, std::vector<int64_t> strides) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto idx_attr = Int64ToDenseIntElementsAttr(module_->builder(), starts);
+  auto lim_attr = Int64ToDenseIntElementsAttr(module_->builder(), limits);
+  auto strides_attr = Int64ToDenseIntElementsAttr(module_->builder(), strides);
+
+  return module_->builder()->create<mlir::mhlo::SliceOp>(
+      module_->builder()->getUnknownLoc(),
+      operand,
+      idx_attr,
+      lim_attr,
+      strides_attr);
+}
+
+mlir::Value MLIRFunction::DynamicSliceOp(mlir::Value operand, std::vector<mlir::Value> starts, std::vector<int64_t> lengths) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto len_attr = Int64ToDenseIntElementsAttr(module_->builder(), lengths);
+  mlir::ValueRange starts_range(llvm::ArrayRef<mlir::Value>(starts.data(), starts.size()));
+
+  return module_->builder()
+      ->create<mlir::mhlo::DynamicSliceOp>(
+          module_->builder()->getUnknownLoc(),
+          operand,
+          starts_range,
+          len_attr);
+}
+
+mlir::Value MLIRFunction::ClzOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  return module_->builder()->create<mlir::mhlo::ClzOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
+mlir::Value MLIRFunction::PopulationCountOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  return module_->builder()->create<mlir::mhlo::PopulationCountOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
 mlir::Value MLIRFunction::TupleOp(std::vector<mlir::Value> vals) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
   auto op = module_->builder()->create<mlir::mhlo::TupleOp>(module_->builder()->getUnknownLoc(), vals);
@@ -438,6 +524,71 @@ mlir::Value MLIRFunction::IotaOp(xla::Shape shape, int64_t dimension) {
   mlir::TensorType type = GetMLIRType(module_->builder(), dimensions, shape.element_type());
 
   return module_->builder()->create<mlir::mhlo::IotaOp>(module_->builder()->getUnknownLoc(), type, dimension);
+}
+
+mlir::Value MLIRFunction::DotGeneralOp(
+  xla::Shape output_shape,
+  mlir::Value lhs,
+  mlir::Value rhs,
+  xla::DotDimensionNumbers dnums,
+  xla::PrecisionConfig config
+) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+
+  absl::Span<const int64_t> dimensions_span = output_shape.dimensions();
+  std::vector<int64_t> dimensions(dimensions_span.begin(), dimensions_span.end());
+  
+  mlir::TensorType output_type = GetMLIRType(module_->builder(), dimensions, output_shape.element_type());
+  auto mlir_dnums = ConvertDotDimensionNumbersToAttr(module_->builder(), dnums);
+
+  auto op = module_->builder()->create<mlir::mhlo::DotGeneralOp>(
+    module_->builder()->getUnknownLoc(),
+    output_type,
+    lhs,
+    rhs,
+    mlir_dnums,
+    nullptr
+  );
+
+  return op;
+}
+
+mlir::Value MLIRFunction::BroadcastInDimOp(mlir::Value operand, xla::Shape shape, std::vector<int64_t> axes) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+
+  absl::Span<const int64_t> dimensions_span = shape.dimensions();
+  std::vector<int64_t> dimensions(dimensions_span.begin(), dimensions_span.end());
+  mlir::TensorType result_type = GetMLIRType(module_->builder(), dimensions, shape.element_type());
+
+  auto axes_attr = Int64ToDenseIntElementsAttr(module_->builder(), axes);
+
+  auto op = module_->builder()->create<mlir::mhlo::BroadcastInDimOp>(module_->builder()->getUnknownLoc(), result_type, operand, axes_attr);
+  return op;
+}
+
+mlir::Value MLIRFunction::ConcatenateOp(std::vector<mlir::Value> operands, int64_t dimension) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  mlir::ValueRange operands_range(llvm::ArrayRef<mlir::Value>(operands.data(), operands.size()));
+  auto op = module_->builder()->create<mlir::mhlo::ConcatenateOp>(module_->builder()->getUnknownLoc(), operands_range, dimension);
+  return op;
+}
+
+mlir::Value MLIRFunction::OptimizationBarrierOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto op = module_->builder()->create<mlir::mhlo::OptimizationBarrierOp>(module_->builder()->getUnknownLoc(), operand);
+  return op.getResult()[0];
+}
+
+mlir::Value MLIRFunction::ClampOp(mlir::Value min, mlir::Value operand, mlir::Value max) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto op = module_->builder()->create<mlir::mhlo::ClampOp>(module_->builder()->getUnknownLoc(), min, operand, max);
+  return op;
+}
+
+mlir::Value MLIRFunction::SelectOp(mlir::Value pred, mlir::Value on_true, mlir::Value on_false) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  auto op = module_->builder()->create<mlir::mhlo::SelectOp>(module_->builder()->getUnknownLoc(), pred, on_true, on_false);
+  return op;
 }
 
 template <typename T>

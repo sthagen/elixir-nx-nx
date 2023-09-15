@@ -34,7 +34,8 @@ defmodule EXLA.MLIR.Value do
                [:sin, :acos, :asin, :atan, :cosh, :sinh] ++
                [:tanh, :acosh, :asinh, :atanh, :sqrt, :cbrt] ++
                [:bitwise_not, :erf, :erfc, :erf_inv] ++
-               [:is_infinity, :is_nan, :rsqrt, :negate]
+               [:is_infinity, :is_nan, :rsqrt, :negate, :count_leading_zeros] ++
+               [:population_count]
 
   for op <- @unary_ops do
     mlir_op = :"mlir_#{op}"
@@ -43,6 +44,32 @@ defmodule EXLA.MLIR.Value do
       ref = EXLA.NIF.unquote(mlir_op)(func.ref, operand) |> unwrap!()
       %Value{ref: ref, function: func}
     end
+  end
+
+  def reshape(%Value{function: %Function{} = func} = op, shape_tuple) do
+    ref = EXLA.NIF.mlir_reshape(func.ref, op.ref, shape_tuple) |> unwrap!()
+    %Value{op | ref: ref}
+  end
+
+  def reverse(%Value{function: %Function{} = func} = op, dims) do
+    ref = EXLA.NIF.mlir_reverse(func.ref, op.ref, dims) |> unwrap!()
+    %Value{op | ref: ref}
+  end
+
+  def transpose(%Value{function: %Function{} = func} = op, axes) do
+    ref = EXLA.NIF.mlir_transpose(func.ref, op.ref, axes) |> unwrap!()
+    %Value{op | ref: ref}
+  end
+
+  def slice(%Value{function: %Function{} = func} = op, starts, limits, strides) do
+    ref = EXLA.NIF.mlir_slice(func.ref, op.ref, starts, limits, strides) |> unwrap!()
+    %Value{op | ref: ref}
+  end
+
+  def dynamic_slice(%Value{function: %Function{} = func} = op, starts, lengths) do
+    starts = Enum.map(starts, fn %Value{ref: ref} -> ref end)
+    ref = EXLA.NIF.mlir_dynamic_slice(func.ref, op.ref, starts, lengths) |> unwrap!()
+    %Value{op | ref: ref}
   end
 
   def tuple([%Value{function: %Function{} = func} | _rest] = vals) do
@@ -92,6 +119,94 @@ defmodule EXLA.MLIR.Value do
       |> unwrap!()
 
     %Value{ref: ref, function: func}
+  end
+
+  def dot_general(
+        output_shape,
+        %Value{function: func} = lhs,
+        %Value{function: func} = rhs,
+        dnums,
+        precision_config
+      ) do
+    config = get_precision_config_int(precision_config)
+
+    ref =
+      EXLA.NIF.mlir_dot_general(func.ref, output_shape.ref, lhs.ref, rhs.ref, dnums, config)
+      |> unwrap!()
+
+    %Value{ref: ref, function: func}
+  end
+
+  def broadcast_in_dim(%Value{function: func} = operand, output_shape, axes) do
+    ref =
+      EXLA.NIF.mlir_broadcast_in_dim(func.ref, output_shape.ref, operand.ref, axes)
+      |> unwrap!()
+
+    %Value{function: func, ref: ref}
+  end
+
+  def concatenate([%Value{function: func} | _rest] = operands, dimension) do
+    refs = Enum.map(operands, & &1.ref)
+
+    ref =
+      EXLA.NIF.mlir_concatenate(func.ref, refs, dimension)
+      |> unwrap!()
+
+    %Value{ref: ref, function: func}
+  end
+
+  def optimization_barrier(%Value{function: func} = operand) do
+    ref =
+      EXLA.NIF.mlir_optimization_barrier(func.ref, operand.ref)
+      |> unwrap!()
+
+    %Value{ref: ref, function: func}
+  end
+
+  def clamp(
+        %Value{function: func} = operand,
+        %Value{function: func} = min,
+        %Value{function: func} = max
+      ) do
+    ref =
+      EXLA.NIF.mlir_clamp(func.ref, operand.ref, min.ref, max.ref)
+      |> unwrap!()
+
+    %Value{ref: ref, function: func}
+  end
+
+  def select(
+        %Value{function: func} = pred,
+        %Value{function: func} = on_true,
+        %Value{function: func} = on_false
+      ) do
+    ref =
+      EXLA.NIF.mlir_select(func.ref, pred.ref, on_true.ref, on_false.ref)
+      |> unwrap!()
+
+    %Value{ref: ref, function: func}
+  end
+
+  defp get_precision_config_int(precision_config) do
+    case precision_config do
+      :default ->
+        0
+
+      :high ->
+        1
+
+      :highest ->
+        2
+
+      :packed_nibble ->
+        3
+
+      _ ->
+        raise ArgumentError,
+              "expected precision configuration to be one of" <>
+                " :default, :high, :highest, or :packed_nibble," <>
+                " got: #{inspect(precision_config)}"
+    end
   end
 
   defp unwrap!({:ok, value}), do: value

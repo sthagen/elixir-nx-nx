@@ -29,13 +29,19 @@ defmodule EXLA.NIF do
                [:sin, :acos, :asin, :atan, :cosh, :sinh] ++
                [:tanh, :acosh, :asinh, :atanh, :sqrt, :cbrt] ++
                [:bitwise_not, :erf, :erfc, :erf_inv] ++
-               [:is_infinity, :is_nan, :rsqrt, :negate]
+               [:is_infinity, :is_nan, :rsqrt, :negate, :count_leading_zeros] ++
+               [:population_count]
 
   for op <- @unary_ops do
     mlir_op = :"mlir_#{op}"
     def unquote(mlir_op)(_function, _operand), do: :erlang.nif_error(:undef)
   end
 
+  def mlir_reshape(_function, _operand, _shape), do: :erlang.nif_error(:undef)
+  def mlir_reverse(_function, _operand, _shape), do: :erlang.nif_error(:undef)
+  def mlir_transpose(_function, _operand, _shape), do: :erlang.nif_error(:undef)
+  def mlir_slice(_function, _operand, _starts, _limits, _strides), do: :erlang.nif_error(:undef)
+  def mlir_dynamic_slice(_function, _operand, _starts, _lengths), do: :erlang.nif_error(:undef)
   def mlir_tuple(_function, _vals), do: :erlang.nif_error(:undef)
   def mlir_get_tuple_element(_function, _tuple, _index), do: :erlang.nif_error(:undef)
 
@@ -61,6 +67,17 @@ defmodule EXLA.NIF do
   def mlir_iota(_function, _shape, _dim), do: :erlang.nif_error(:undef)
   def mlir_constant_r0(_function, _value, _type), do: :erlang.nif_error(:undef)
   def mlir_constant_from_binary(_function, _data, _type, _dims), do: :erlang.nif_error(:undef)
+
+  def mlir_dot_general(_function, _shape, _lhs, _rhs, _dims, _precision),
+    do: :erlang.nif_error(:undef)
+
+  def mlir_broadcast_in_dim(_function, _shape, _operand, _axes), do: :erlang.nif_error(:undef)
+  def mlir_concatenate(_function, _operands, _dimension), do: :erlang.nif_error(:undef)
+  def mlir_optimization_barrier(_function, _operand), do: :erlang.nif_error(:undef)
+  def mlir_clamp(_function, _operand, _min, _max), do: :erlang.nif_error(:undef)
+
+  def mlir_select(_function, _pred, _on_true, _on_false),
+    do: :erlang.nif_error(:undef)
 
   def new_builder(_name),
     do: :erlang.nif_error(:undef)

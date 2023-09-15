@@ -464,8 +464,14 @@ ERL_NIF_TERM mlir_is_nan(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
 ERL_NIF_TERM mlir_rsqrt(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   return MLIR_UNARY_OP(RsqrtOp);
 }
-ERL_NIF_TERM
-mlir_iota(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+ERL_NIF_TERM mlir_clz(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  return MLIR_UNARY_OP(ClzOp);
+}
+ERL_NIF_TERM mlir_population_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  return MLIR_UNARY_OP(PopulationCountOp);
+}
+
+ERL_NIF_TERM mlir_iota(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 3) {
     return exla::nif::error(env, "Bad argument count.");
   }
@@ -485,6 +491,130 @@ mlir_iota(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   }
 
   mlir::Value res = (*function)->IotaOp(*shape, dimension);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+ERL_NIF_TERM mlir_reshape(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<int64_t> shape;
+  mlir::Value* operand;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_tuple(env, argv[2], shape)) {
+    return exla::nif::error(env, "Unable to get shape.");
+  }
+
+  mlir::Value res = (*function)->ReshapeOp(*operand, shape);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_reverse(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<int64_t> dims;
+  mlir::Value* operand;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_list(env, argv[2], dims)) {
+    return exla::nif::error(env, "Unable to get dims.");
+  }
+
+  mlir::Value res = (*function)->ReverseOp(*operand, dims);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_transpose(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 3) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<int64_t> axes;
+  mlir::Value* operand;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_list(env, argv[2], axes)) {
+    return exla::nif::error(env, "Unable to get axes.");
+  }
+
+  mlir::Value res = (*function)->TransposeOp(*operand, axes);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_slice(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 5) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<int64_t> starts, limits, strides;
+  mlir::Value* operand;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_list(env, argv[2], starts)) {
+    return exla::nif::error(env, "Unable to get starts.");
+  }
+  if (!exla::nif::get_list(env, argv[3], limits)) {
+    return exla::nif::error(env, "Unable to get lwngths.");
+  }
+  if (!exla::nif::get_list(env, argv[4], strides)) {
+    return exla::nif::error(env, "Unable to get strides.");
+  }
+
+  mlir::Value res = (*function)->SliceOp(*operand, starts, limits, strides);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_dynamic_slice(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 4) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<mlir::Value> starts;
+  std::vector<int64_t> lengths;
+  mlir::Value* operand;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_list<mlir::Value>(env, argv[2], starts)) {
+    return exla::nif::error(env, "Unable to get starts.");
+  }
+  if (!exla::nif::get_list(env, argv[3], lengths)) {
+    return exla::nif::error(env, "Unable to get lengths.");
+  }
+
+  mlir::Value res = (*function)->DynamicSliceOp(*operand, starts, lengths);
   return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
 }
 
@@ -525,6 +655,69 @@ ERL_NIF_TERM mlir_constant_from_binary(ErlNifEnv* env, int argc, const ERL_NIF_T
   }
 
   return (*function)->ConstantOp(type, env, argv[1], dims);
+}
+
+ERL_NIF_TERM mlir_dot_general(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 6) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  xla::Shape* output_shape;
+  mlir::Value* lhs;
+  mlir::Value* rhs;
+  xla::DotDimensionNumbers dnums;
+  xla::PrecisionConfig config;
+
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<xla::Shape>(env, argv[1], output_shape)) {
+    return exla::nif::error(env, "Unable to get shape.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], lhs)) {
+    return exla::nif::error(env, "Unable to get lhs.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[3], rhs)) {
+    return exla::nif::error(env, "Unable to get rhs.");
+  }
+  if (!exla::nif::get_dot_dimension_numbers(env, argv[4], &dnums)) {
+    return exla::nif::error(env, "Unable to get dot dimensions.");
+  }
+  if (!exla::nif::get_precision_config(env, argv[5], 2, &config)) {
+    return exla::nif::error(env, "Unable to get precision configuration.");
+  }
+
+  mlir::Value res = (*function)->DotGeneralOp(*output_shape, *lhs, *rhs, dnums, config);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_select(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 4) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value* pred;
+  mlir::Value* on_true;
+  mlir::Value* on_false;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], pred)) {
+    return exla::nif::error(env, "Unable to get pred.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], on_true)) {
+    return exla::nif::error(env, "Unable to get on true.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[3], on_false)) {
+    return exla::nif::error(env, "Unable to get on false.");
+  }
+
+  mlir::Value res = (*function)->SelectOp(*pred, *on_true, *on_false);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
 }
 
 ERL_NIF_TERM mlir_build(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -571,6 +764,53 @@ ERL_NIF_TERM mlir_convert(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, result));
 }
 
+ERL_NIF_TERM mlir_optimization_barrier(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+  
+  exla::MLIRFunction** function;
+  mlir::Value* t;
+  
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], t)) {
+    return exla::nif::error(env, "Unable to get tensor.");
+  }
+
+  mlir::Value result = (*function)->OptimizationBarrierOp(*t);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, result));
+}
+
+ERL_NIF_TERM mlir_clamp(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 4) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value* operand;
+  mlir::Value* min;
+  mlir::Value* max;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], min)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[3], max)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+
+  mlir::Value result = (*function)->ClampOp(*min, *operand, *max);
+
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, result));
+}
+
 ERL_NIF_TERM mlir_get_shape(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   if (argc != 1) {
     return exla::nif::error(env, "Bad argument count.");
@@ -591,6 +831,58 @@ ERL_NIF_TERM mlir_get_shape(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
   xla::Shape shape = xla::ShapeUtil::MakeShape(element_type, shape_dims.getDims());
 
   return exla::nif::ok(env, exla::nif::make<xla::Shape>(env, shape));
+}
+
+ERL_NIF_TERM mlir_broadcast_in_dim(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 4) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+  
+  exla::MLIRFunction** function;
+  std::vector<int64_t> axes;
+  xla::Shape* output_shape;
+  mlir::Value* operand;
+  
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<xla::Shape>(env, argv[1], output_shape)) {
+    return exla::nif::error(env, "Unable to get shape.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get_tuple(env, argv[3], axes)) {
+    return exla::nif::error(env, "Unable to get broadcast dimensions.");
+  }
+  
+  mlir::Value res = (*function)->BroadcastInDimOp(*operand, *output_shape, axes);
+  
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_concatenate(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 2) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  std::vector<mlir::Value> vals;
+  exla::int64 dimension;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get_list<mlir::Value>(env, argv[1], vals)) {
+    return exla::nif::error(env, "Unable to get values.");
+  }
+  if (!exla::nif::get(env, argv[2], &dimension)) {
+    return exla::nif::error(env, "Unable to get dimension");
+  }
+
+  mlir::Value res = (*function)->ConcatenateOp(vals, dimension);
+
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
 }
 
 ERL_NIF_TERM dump_mlir_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -1242,6 +1534,11 @@ static ErlNifFunc exla_funcs[] = {
     {"mlir_sqrt", 2, mlir_sqrt},
     {"mlir_cbrt", 2, mlir_cbrt},
     {"mlir_iota", 3, mlir_iota},
+    {"mlir_reshape", 3, mlir_reshape},
+    {"mlir_reverse", 3, mlir_reverse},
+    {"mlir_transpose", 3, mlir_transpose},
+    {"mlir_slice", 5, mlir_slice},
+    {"mlir_dynamic_slice", 4, mlir_dynamic_slice},
     {"mlir_constant_r0", 3, mlir_constant_r0},
     {"mlir_constant_from_binary", 4, mlir_constant_from_binary},
     {"mlir_bitwise_and", 3, mlir_bitwise_and},
@@ -1258,6 +1555,14 @@ static ErlNifFunc exla_funcs[] = {
     {"mlir_is_infinity", 2, mlir_is_infinity},
     {"mlir_is_nan", 2, mlir_is_nan},
     {"mlir_rsqrt", 2, mlir_rsqrt},
+    {"mlir_count_leading_zeros", 2, mlir_clz},
+    {"mlir_dot_general", 6, mlir_dot_general},
+    {"mlir_clamp", 4, mlir_clamp},
+    {"mlir_population_count", 2, mlir_population_count},
+    {"mlir_broadcast_in_dim", 4, mlir_broadcast_in_dim},
+    {"mlir_concatenate", 3, mlir_concatenate},
+    {"mlir_optimization_barrier", 2, mlir_optimization_barrier},
+    {"mlir_select", 4, mlir_select},
     // XlaBuilder
     {"new_builder", 1, new_builder},
     {"create_sub_builder", 2, create_sub_builder},

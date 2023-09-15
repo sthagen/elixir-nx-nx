@@ -184,15 +184,17 @@ defmodule EXLA.MLIR.ExecutableTest do
       assert_all_close(Nx.backend_transfer(result_nx), Nx.backend_transfer(result_mlir))
     end
 
-    test "bitwise_not" do
-      function = fn t -> Nx.bitwise_not(t) end
+    for op <- [:count_leading_zeros, :bitwise_not, :population_count] do
+      test "#{op}" do
+        function = fn t -> Nx.unquote(op)(t) end
 
-      t = Nx.iota({2, 3, 1}, type: :s64)
+        t = Nx.iota({2, 3, 1}, type: :s64)
 
-      result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
-      result_mlir = Nx.Defn.jit_apply(function, [t])
+        result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+        result_mlir = Nx.Defn.jit_apply(function, [t])
 
-      assert_equal(result_nx, result_mlir)
+        assert_equal(result_nx, result_mlir)
+      end
     end
 
     test "acosh" do
@@ -252,7 +254,7 @@ defmodule EXLA.MLIR.ExecutableTest do
 
   describe "constants" do
     test "iota" do
-      for axis <- [0, 1, 2] do
+      for axis <- [0, 1, 2, nil] do
         function = fn -> Nx.iota({2, 3, 4}, axis: axis) end
 
         expected_result = Nx.Defn.jit_apply(function, [], compiler: Nx.Defn.Evaluator)
@@ -282,6 +284,155 @@ defmodule EXLA.MLIR.ExecutableTest do
 
         assert_equal(expected_result, mlir_result)
       end
+    end
+  end
+
+  describe "reshape" do
+    test "works" do
+      t = Nx.iota({24})
+      function = fn t -> Nx.reshape(t, {2, 3, 4}) end
+      result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [t])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "slice" do
+    test "works" do
+      t = Nx.iota({2, 3, 4})
+
+      function = fn t -> Nx.slice(t, [0, 0, 0], [2, 3, 1]) end
+      result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [t])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+
+      function = fn t -> Nx.slice(t, [0, Nx.tensor(0), Nx.tensor(1)], [2, 3, 4]) end
+      result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [t])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "reverse" do
+    test "works" do
+      t = Nx.iota({2, 3, 4})
+      axes = [[], 0, 1, 2]
+
+      for ax1 <- axes, ax2 <- axes, ax3 <- axes do
+        axes = Enum.uniq(List.flatten([ax1, ax2, ax3]))
+        function = fn t -> Nx.reverse(t, axes: axes) end
+        result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+        result_mlir = Nx.Defn.jit_apply(function, [t])
+
+        assert result_nx.shape == result_mlir.shape
+        assert result_nx.type == result_mlir.type
+        assert_equal(result_nx, result_mlir)
+      end
+    end
+  end
+
+  describe "tranpose" do
+    test "works" do
+      t = Nx.iota({2, 3, 4})
+      axes = [0, 1, 2]
+
+      for ax1 <- axes, ax2 <- axes, ax3 <- axes, ax1 != ax2 and ax1 != ax3 and ax2 != ax3 do
+        axes = [ax1, ax2, ax3]
+        function = fn t -> Nx.transpose(t, axes: axes) end
+        result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+        result_mlir = Nx.Defn.jit_apply(function, [t])
+
+        assert result_nx.shape == result_mlir.shape
+        assert result_nx.type == result_mlir.type
+        assert_equal(result_nx, result_mlir)
+      end
+      |> then(fn x -> assert length(x) == 6 end)
+    end
+  end
+
+  describe "dot_general" do
+    test "works" do
+      lhs = Nx.iota({2, 3, 4}, type: {:f, 32})
+      rhs = Nx.iota({2, 3, 4}, type: {:f, 32})
+
+      function = fn lhs, rhs -> Nx.dot(lhs, [2], [0], rhs, [2], [0]) end
+      result_nx = Nx.Defn.jit_apply(function, [lhs, rhs], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [lhs, rhs])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "broadcast_in_dim" do
+    test "works" do
+      t = Nx.iota({1, 2, 3})
+
+      function = fn tensor -> Nx.broadcast(tensor, {3, 2, 3}) end
+      result_nx = Nx.Defn.jit_apply(function, [t], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [t])
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "concatenate" do
+    test "works" do
+      inputs = [Nx.tensor([1, 2, 3]), Nx.tensor([4, 5, 6]), Nx.tensor([7, 8, 9])]
+
+      function = fn tensors -> Nx.concatenate(tensors, axis: 0) end
+      result_nx = Nx.Defn.jit_apply(function, [inputs], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [inputs])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "clamp" do
+    test "works" do
+      value = Nx.tensor([-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+      min = Nx.tensor(1)
+      max = Nx.tensor(3)
+
+      function = fn value, min, max -> Nx.clip(value, min, max) end
+      result_nx = Nx.Defn.jit_apply(function, [value, min, max], compiler: Nx.Defn.Evaluator)
+      result_mlir = Nx.Defn.jit_apply(function, [value, min, max])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
+    end
+  end
+
+  describe "select" do
+    test "works" do
+      pred = Nx.tensor([0, 1, 0, 1])
+      on_true = Nx.tensor([1, 2, 3, 4])
+      on_false = Nx.tensor([5, 6, 7, 8])
+
+      function = fn x, y, z -> Nx.select(x, y, z) end
+
+      result_nx =
+        Nx.Defn.jit_apply(function, [pred, on_true, on_false], compiler: Nx.Defn.Evaluator)
+
+      result_mlir = Nx.Defn.jit_apply(function, [pred, on_true, on_false])
+
+      assert result_nx.shape == result_mlir.shape
+      assert result_nx.type == result_mlir.type
+      assert_equal(result_nx, result_mlir)
     end
   end
 end
