@@ -1411,6 +1411,10 @@ defmodule EXLA.Defn do
     EXLA.Op.select(EXLA.Op.less_equal(iota_one, iota_zero), cholesky, zeros)
   end
 
+  defp to_operator(:sort, [%Value{} = tensor, opts], _ans, _state) do
+    Value.sort(tensor, opts[:axis], opts[:direction])
+  end
+
   defp to_operator(:sort, [tensor, opts], ans, state) do
     dimension = opts[:axis]
 
@@ -1423,6 +1427,15 @@ defmodule EXLA.Defn do
     args = [%{type: ans.type, shape: {}}, %{type: ans.type, shape: {}}]
     comp = op_computation(op, args, state)
     EXLA.Op.sort(tensor, comp, dimension)
+  end
+
+  defp to_operator(:argsort, [%Value{} = tensor, opts], ans, _state) do
+    dimension = opts[:axis]
+    dims = op_shape(tensor)
+    iota_shape = EXLA.Shape.make_shape(ans.type, dims)
+    iota = EXLA.Lib.iota(tensor.function, iota_shape, dimension)
+    [_, arg] = Value.sort([tensor, iota], dimension, opts[:direction])
+    arg
   end
 
   defp to_operator(:argsort, [tensor, opts], ans, state) do
