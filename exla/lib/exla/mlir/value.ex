@@ -35,7 +35,7 @@ defmodule EXLA.MLIR.Value do
                [:tanh, :acosh, :asinh, :atanh, :sqrt, :cbrt] ++
                [:bitwise_not, :erf, :erfc, :erf_inv] ++
                [:is_infinity, :is_nan, :rsqrt, :negate, :count_leading_zeros] ++
-               [:population_count]
+               [:population_count, :real, :imag, :conjugate]
 
   for op <- @unary_ops do
     mlir_op = :"mlir_#{op}"
@@ -137,6 +137,33 @@ defmodule EXLA.MLIR.Value do
   def iota(%Function{} = func, shape, dim) do
     ref = EXLA.NIF.mlir_iota(func.ref, shape.ref, dim) |> unwrap!()
     %Value{ref: ref, function: func}
+  end
+
+  def constant_r0(%Function{} = func, value, {:c, width} = type)
+      when type in [{:c, 64}, {:c, 128}] do
+    {re, im} =
+      case value do
+        %Complex{re: re, im: im} -> {re, im}
+        n when is_float(n) -> {n, 0.0}
+        n when is_integer(n) -> {n * 1.0, 0.0}
+        true -> {1.0, 0.0}
+        false -> {0.0, 0.0}
+      end
+
+    width = div(width, 2)
+
+    data = <<re::float-native-size(width), im::float-native-size(width)>>
+
+    ref =
+      EXLA.NIF.mlir_constant_from_binary(
+        func.ref,
+        data,
+        EXLA.Shape.dtype_to_charlist(type),
+        {1}
+      )
+      |> unwrap!()
+
+    reshape(%Value{ref: ref, function: func}, {})
   end
 
   def constant_r0(%Function{} = func, value, type) do
@@ -246,6 +273,71 @@ defmodule EXLA.MLIR.Value do
     %Value{ref: ref, function: func}
   end
 
+  def fft(%Value{function: func} = value, fft_kind, fft_length)
+      when fft_kind in [:fft, :ifft]
+      when is_list(fft_length) or is_integer(fft_length) do
+    ref =
+      EXLA.NIF.mlir_fft(
+        func.ref,
+        value.ref,
+        if(fft_kind == :fft, do: 1, else: 0),
+        List.wrap(fft_length)
+      )
+      |> unwrap!()
+
+    %Value{value | ref: ref}
+  end
+
+  def scatter(
+        %Value{function: func} = target,
+        %Value{function: func} = indices,
+        %Value{function: func} = updates,
+        kind
+      )
+      when kind in [:add, :put] do
+    add_or_put = if(kind == :add, do: 1, else: 0)
+
+    ref =
+      EXLA.NIF.mlir_scatter(
+        func.ref,
+        target.ref,
+        indices.ref,
+        updates.ref,
+        add_or_put
+      )
+      |> unwrap!()
+
+    %Value{target | ref: ref}
+  end
+
+  def select_and_scatter(
+        %Value{function: func} = target,
+        %Value{function: func} = source,
+        %Value{function: func} = init_value,
+        comparison,
+        window_dimensions,
+        window_strides,
+        padding
+      )
+      when comparison in [:gt, :lt] do
+    gt_or_lt = if(comparison == :gt, do: 1, else: 0)
+
+    ref =
+      EXLA.NIF.mlir_select_and_scatter(
+        func.ref,
+        target.ref,
+        source.ref,
+        init_value.ref,
+        gt_or_lt,
+        window_dimensions,
+        window_strides,
+        padding
+      )
+      |> unwrap!()
+
+    %Value{target | ref: ref}
+  end
+
   defp get_precision_config_int(precision_config) do
     case precision_config do
       :default ->
@@ -266,6 +358,41 @@ defmodule EXLA.MLIR.Value do
                 " :default, :high, :highest, or :packed_nibble," <>
                 " got: #{inspect(precision_config)}"
     end
+  end
+
+  def convolution(
+        %Value{function: func} = tensor,
+        %Value{function: func} = kernel,
+        strides,
+        padding,
+        input_dilation,
+        kernel_dilation,
+        dimension_numbers,
+        feature_group_count,
+        batch_group_count,
+        precision_config,
+        output_shape
+      ) do
+    precision_config = get_precision_config_int(precision_config)
+
+    ref =
+      EXLA.NIF.mlir_convolution(
+        func.ref,
+        tensor.ref,
+        kernel.ref,
+        strides,
+        padding,
+        input_dilation,
+        kernel_dilation,
+        dimension_numbers,
+        feature_group_count,
+        batch_group_count,
+        precision_config,
+        Tuple.to_list(output_shape)
+      )
+      |> unwrap!()
+
+    %Value{tensor | ref: ref}
   end
 
   defp unwrap!({:ok, value}), do: value

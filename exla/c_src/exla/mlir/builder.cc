@@ -18,36 +18,42 @@
 #include "xla/types.h"
 
 namespace exla {
-mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, int type_int) {
+mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, xla::PrimitiveType type_int) {
+  // type_int comes from the xla::PrimitiveType enum
+  using xla::PrimitiveType;
   switch (type_int) {
-    case 2:
+    case PrimitiveType::S8:
       return builder->getIntegerType(8);
-    case 3:
+    case PrimitiveType::S16:
       return builder->getIntegerType(16);
-    case 4:
+    case PrimitiveType::S32:
       return builder->getIntegerType(32);
-    case 5:
+    case PrimitiveType::S64:
       return builder->getIntegerType(64);
-    case 6:
+    case PrimitiveType::U8:
       return builder->getIntegerType(8, false);
-    case 7:
+    case PrimitiveType::U16:
       return builder->getIntegerType(16, false);
-    case 8:
+    case PrimitiveType::U32:
       return builder->getIntegerType(32, false);
-    case 9:
+    case PrimitiveType::U64:
       return builder->getIntegerType(64, false);
-    case 10:
+    case PrimitiveType::F16:
       return builder->getF16Type();
-    case 11:
+    case PrimitiveType::F32:
       return builder->getF32Type();
-    case 12:
+    case PrimitiveType::F64:
       return builder->getF64Type();
-    case 16:
+    case PrimitiveType::BF16:
       return builder->getBF16Type();
+    case PrimitiveType::C64:
+      return mlir::ComplexType::get(builder->getF32Type());
+    case PrimitiveType::C128:
+      return mlir::ComplexType::get(builder->getF64Type());
   }
 }
 
-mlir::TensorType GetMLIRType(mlir::OpBuilder *builder, std::vector<tsl::int64> dims, int type_int) {
+mlir::TensorType GetMLIRType(mlir::OpBuilder *builder, std::vector<tsl::int64> dims, xla::PrimitiveType type_int) {
   auto type = TypeIntToMLIRType(builder, type_int);
   return mlir::RankedTensorType::get(dims, type);
 }
@@ -127,6 +133,14 @@ int MLIRFunction::get_mlir_type(ErlNifEnv *env, ERL_NIF_TERM term, mlir::Type *t
     *type = builder->getBF16Type();
     return 0;
   }
+  if (type_str == "c64") {
+    *type = mlir::ComplexType::get(builder->getF32Type());
+    return 0;
+  }
+  if (type_str == "c128") {
+    *type = mlir::ComplexType::get(builder->getF64Type());
+    return 0;
+  }
 
   return 1;
 }
@@ -151,6 +165,11 @@ mlir::Value MLIRFunction::SubtractOp(mlir::Value lhs, mlir::Value rhs) {
 mlir::Value MLIRFunction::ConvertOp(mlir::Value operand, mlir::Type type) {
   mlir::OpBuilder *builder = module_->builder();
   builder->setInsertionPointToEnd(&func_->getBody().back());
+
+  if (operand.getType().isa<mlir::ComplexType>() && !type.isa<mlir::ComplexType>()) {
+    // get the real part of the operand in case we're downcasting from complex to something else
+    operand = builder->create<mlir::mhlo::RealOp>(builder->getUnknownLoc(), operand);
+  }
 
   auto op = builder->create<mlir::mhlo::ConvertOp>(builder->getUnknownLoc(), operand, type);
   return op;
@@ -469,6 +488,22 @@ mlir::Value MLIRFunction::RsqrtOp(mlir::Value operand) {
   return module_->builder()->create<mlir::mhlo::RsqrtOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
+mlir::Value MLIRFunction::RealOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  return module_->builder()->create<mlir::mhlo::RealOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
+mlir::Value MLIRFunction::ImagOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  return module_->builder()->create<mlir::mhlo::ImagOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
+mlir::Value MLIRFunction::ConjOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
+  return module_->builder()->create<mlir::chlo::ConjOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
 mlir::Value MLIRFunction::TransposeOp(mlir::Value operand, std::vector<int64_t> axes) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
   auto axes_attr = Int64ToDenseIntElementsAttr(module_->builder(), axes);
@@ -542,7 +577,6 @@ std::vector<mlir::Value> MLIRFunction::SortOp(std::vector<mlir::Value> operands,
       value_range,
       dim,
       true);
-
   buildSortComparisonBody(element_types, direction, compare_type,
                           &sort_op.getComparator(), builder);
 
@@ -673,6 +707,97 @@ mlir::Value MLIRFunction::SelectOp(mlir::Value pred, mlir::Value on_true, mlir::
   return op;
 }
 
+static void buildScatterComputation(mlir::Type element_type, bool add_or_put, mlir::Region *body, mlir::OpBuilder *builder) {
+  mlir::OpBuilder::InsertionGuard insertionPointGuard(*builder);
+  mlir::Location loc = body->getLoc();
+  mlir::Block *block = builder->createBlock(body);
+  // Add two arguments for each element type.
+  block->addArguments({element_type, element_type}, {loc, loc});
+
+  if (add_or_put) {
+    mlir::BlockArgument arg0 = block->getArgument(0);
+    mlir::BlockArgument arg1 = block->getArgument(1);
+    mlir::Value add = builder->create<mlir::mhlo::AddOp>(loc, arg0, arg1);
+    builder->create<mlir::mhlo::ReturnOp>(loc, add);
+  } else {
+    mlir::BlockArgument arg1 = block->getArgument(1);
+    builder->create<mlir::mhlo::ReturnOp>(loc, arg1);
+  }
+}
+
+mlir::Value MLIRFunction::ScatterOp(mlir::Value target, mlir::Value indices, mlir::Value updates, bool add_or_put) {
+  auto builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
+  mlir::RankedTensorType type = llvm::cast<mlir::RankedTensorType>(target.getType());
+  int64_t rank = type.getShape().size();
+  std::vector<int64_t> axes(rank);
+  for (int64_t i = 0; i < rank; i++) {
+    axes[i] = i;
+  }
+
+  auto scatter_dimension_numbers = mlir::mhlo::ScatterDimensionNumbersAttr::get(builder->getContext(), {}, axes, axes, rank);
+
+  mlir::mhlo::ScatterOp scatter_op = builder->create<mlir::mhlo::ScatterOp>(builder->getUnknownLoc(), target, indices, updates, scatter_dimension_numbers);
+  mlir::Type computation_operand_type = mlir::RankedTensorType::get({}, type.getElementType());
+  buildScatterComputation(computation_operand_type, add_or_put, &scatter_op.getUpdateComputation(), builder);
+  return scatter_op.getResult(0);
+}
+
+mlir::Value MLIRFunction::SelectAndScatterOp(
+    mlir::Value target,
+    mlir::Value source,
+    mlir::Value init_value,
+    bool gt_or_lt,
+    std::vector<int64_t> window_dimensions,
+    std::vector<int64_t> window_strides,
+    std::vector<int64_t> padding) {
+  auto builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
+  mlir::RankedTensorType type = llvm::cast<mlir::RankedTensorType>(target.getType());
+  int64_t rank = type.getShape().size();
+  std::vector<int64_t> axes(rank);
+  for (int64_t i = 0; i < rank; i++) {
+    axes[i] = i;
+  }
+  auto scatter_dimension_numbers = mlir::mhlo::ScatterDimensionNumbersAttr::get(builder->getContext(), {}, axes, axes, rank);
+
+  mlir::DenseIntElementsAttr window_dimensions_attr = Int64ToDenseIntElementsAttr(module_->builder(), window_dimensions);
+  mlir::DenseIntElementsAttr window_strides_attr = Int64ToDenseIntElementsAttr(module_->builder(), window_strides);
+
+  auto dense_attr_type = mlir::RankedTensorType::get({static_cast<int64_t>(padding.size() / 2), 2}, builder->getIntegerType(64));
+  auto dense_attr = mlir::DenseElementsAttr::get<int64_t>(dense_attr_type, llvm::ArrayRef<int64_t>(padding.data(), padding.size()));
+  auto padding_attr = llvm::cast<mlir::DenseIntElementsAttr>(dense_attr);
+
+  mlir::mhlo::SelectAndScatterOp op = builder->create<mlir::mhlo::SelectAndScatterOp>(
+      builder->getUnknownLoc(),
+      target,
+      source,
+      init_value,
+      window_dimensions_attr,
+      window_strides_attr,
+      padding_attr);
+
+  mlir::Type computation_operand_type = mlir::RankedTensorType::get({}, type.getElementType());
+  buildScatterComputation(computation_operand_type, true, &op.getScatter(), builder);
+
+  mlir::mhlo::ComparisonDirection direction = gt_or_lt ? mlir::mhlo::ComparisonDirection::GT : mlir::mhlo::ComparisonDirection::LT;
+  std::optional<mlir::StringRef> compare_type = std::nullopt;
+  if (type.isa<mlir::FloatType>()) {
+    compare_type.emplace("TOTALORDER");
+  }
+
+  buildSortComparisonBody({computation_operand_type}, direction, compare_type, &op.getSelect(), builder);
+  return op.getResult();
+}
+
+mlir::Value MLIRFunction::FFTOp(mlir::Value tensor, bool forward_fft, std::vector<int64_t> fft_length) {
+  auto builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
+
+  auto fft_type = mlir::mhlo::FftTypeAttr::get(builder->getContext(), forward_fft ? mlir::mhlo::FftType::FFT : mlir::mhlo::FftType::IFFT);
+  return builder->create<mlir::mhlo::FftOp>(builder->getUnknownLoc(), tensor, fft_type, Int64ToDenseIntElementsAttr(builder, fft_length));
+}
+
 template <typename T>
 ERL_NIF_TERM ConstantOpImpl(mlir::OpBuilder *builder, mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM term, std::vector<int64_t> dims) {
   mlir::RankedTensorType ty = mlir::RankedTensorType::get(dims, type);
@@ -746,6 +871,15 @@ ERL_NIF_TERM MLIRFunction::ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_T
     return ConstantOpImpl<exla::float16>(module_->builder(), type, env, term, dims);
   }
 
+  if (type.isa<mlir::ComplexType>()) {
+    mlir::ComplexType complex_type = llvm::cast<mlir::ComplexType>(type);
+    if (complex_type.getElementType().isF32()) {
+      return ConstantOpImpl<exla::complex64>(module_->builder(), complex_type, env, term, dims);
+    } else {
+      return ConstantOpImpl<exla::complex128>(module_->builder(), complex_type, env, term, dims);
+    }
+  }
+
   if (type.isF32()) {
     return ConstantOpImpl<exla::float32>(module_->builder(), type, env, term, dims);
   }
@@ -753,6 +887,7 @@ ERL_NIF_TERM MLIRFunction::ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_T
   if (type.isF64()) {
     return ConstantOpImpl<exla::float64>(module_->builder(), type, env, term, dims);
   }
+
   return exla::nif::error(env, "invalid type received");
 }
 
@@ -809,14 +944,23 @@ xla::PrimitiveType MLIRTypeToPrimitiveType(mlir::Type type) {
   if (type.isF32()) {
     return xla::primitive_util::NativeToPrimitiveType<float>();
   }
-  // type.isF64()
-  return xla::primitive_util::NativeToPrimitiveType<double>();
+  if (type.isF64()) {
+    return xla::primitive_util::NativeToPrimitiveType<double>();
+  }
+  if (type.isa<mlir::ComplexType>()) {
+    mlir::ComplexType complex_type = llvm::cast<mlir::ComplexType>(type);
+    if (complex_type.getElementType().isF32()) {
+      return xla::primitive_util::NativeToPrimitiveType<xla::complex64>();
+    } else {
+      return xla::primitive_util::NativeToPrimitiveType<xla::complex128>();
+    }
+  }
 }
 
 MLIRFunction *MLIRModule::CreateFunction(
     std::string name,
-    std::vector<std::pair<std::vector<tsl::int64>, int>> arg_types,
-    std::pair<std::vector<tsl::int64>, int> ret_type) {
+    std::vector<std::pair<std::vector<tsl::int64>, xla::PrimitiveType>> arg_types,
+    std::pair<std::vector<tsl::int64>, xla::PrimitiveType> ret_type) {
   std::vector<mlir::Type> types;
   types.reserve(arg_types.size());
   for (auto arg_type : arg_types) {
@@ -833,6 +977,59 @@ MLIRFunction *MLIRModule::CreateFunction(
   funcOp->addEntryBlock();
   builder_->setInsertionPointToStart(&funcOp->getBody().front());
   return new MLIRFunction(this, std::move(funcOp));
+}
+
+mlir::Value MLIRFunction::ConvOp(
+    mlir::Value tensor,
+    mlir::Value kernel,
+    std::vector<int64_t> window_strides,
+    std::vector<int64_t> padding,
+    std::vector<int64_t> tensor_dilation,
+    std::vector<int64_t> kernel_dilation,
+    xla::ConvolutionDimensionNumbers dimension_numbers,
+    uint64_t feature_group_count,
+    uint64_t batch_group_count,
+    uint64_t precision_config,
+    std::vector<int64_t> output_dims) {
+  auto builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
+
+  mlir::RankedTensorType t_in = llvm::cast<mlir::RankedTensorType>(tensor.getType());
+  mlir::RankedTensorType result_type = mlir::RankedTensorType::get(output_dims, t_in.getElementType());
+
+  auto window_strides_attr = Int64ToDenseIntElementsAttr(module_->builder(), window_strides);
+  auto tensor_dilation_attr = Int64ToDenseIntElementsAttr(module_->builder(), tensor_dilation);
+  auto kernel_dilation_attr = Int64ToDenseIntElementsAttr(module_->builder(), kernel_dilation);
+  auto dimension_numbers_attr = mlir::mhlo::ConvDimensionNumbersAttr::get(
+      builder->getContext(),
+      dimension_numbers.input_batch_dimension(),
+      dimension_numbers.input_feature_dimension(),
+      llvm::ArrayRef<int64_t>(dimension_numbers.input_spatial_dimensions().data(), dimension_numbers.input_spatial_dimensions_size()),
+      dimension_numbers.kernel_input_feature_dimension(),
+      dimension_numbers.kernel_output_feature_dimension(),
+      llvm::ArrayRef<int64_t>(dimension_numbers.kernel_spatial_dimensions().data(), dimension_numbers.kernel_spatial_dimensions_size()),
+      dimension_numbers.output_batch_dimension(),
+      dimension_numbers.output_feature_dimension(),
+      llvm::ArrayRef<int64_t>(dimension_numbers.output_spatial_dimensions().data(), dimension_numbers.output_spatial_dimensions_size()));
+
+  auto dense_attr_type = mlir::RankedTensorType::get({static_cast<int64_t>(padding.size() / 2), 2}, builder->getIntegerType(64));
+  auto dense_attr = mlir::DenseElementsAttr::get<int64_t>(dense_attr_type, llvm::ArrayRef<int64_t>(padding.data(), padding.size()));
+  auto padding_attr = llvm::cast<mlir::DenseIntElementsAttr>(dense_attr);
+
+  return builder->create<mlir::mhlo::ConvolutionOp>(
+      builder->getUnknownLoc(),
+      result_type,
+      tensor,
+      kernel,
+      window_strides_attr,
+      padding_attr,
+      tensor_dilation_attr,
+      kernel_dilation_attr,
+      nullptr,
+      dimension_numbers_attr,
+      feature_group_count,
+      batch_group_count,
+      nullptr);
 }
 
 }  // namespace exla

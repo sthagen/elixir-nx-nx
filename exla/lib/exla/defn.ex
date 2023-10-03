@@ -563,7 +563,14 @@ defmodule EXLA.Defn do
          cache
        ) do
     {tensor, cache} = recur_operator(tensor, state, cache)
-    {fft2(&EXLA.Op.fft/2, [tensor, opts], out, state), cache}
+
+    fft_fn =
+      case tensor do
+        %Value{} -> &Value.fft(&1, :fft, &2)
+        _ -> &EXLA.Op.fft/2
+      end
+
+    {fft2(fft_fn, [tensor, opts], out, state), cache}
   end
 
   defp cached_recur_operator(
@@ -573,7 +580,14 @@ defmodule EXLA.Defn do
          cache
        ) do
     {tensor, cache} = recur_operator(tensor, state, cache)
-    {fft2(&EXLA.Op.ifft/2, [tensor, opts], out, state), cache}
+
+    ifft_fn =
+      case tensor do
+        %Value{} -> &Value.fft(&1, :ifft, &2)
+        _ -> &EXLA.Op.ifft/2
+      end
+
+    {fft2(ifft_fn, [tensor, opts], out, state), cache}
   end
 
   defp cached_recur_operator(:optional, %T{data: %Expr{args: args}}, state, cache) do
@@ -634,10 +648,15 @@ defmodule EXLA.Defn do
   defp to_operator(:constant, [constant], ans, state) do
     op = to_constant(state.builder, constant, ans.type)
 
-    if ans.shape == {} do
-      op
-    else
-      EXLA.Op.broadcast_in_dim(op, ans.shape, {})
+    cond do
+      ans.shape == {} ->
+        op
+
+      is_struct(op, EXLA.Op) ->
+        EXLA.Op.broadcast_in_dim(op, ans.shape, {})
+
+      is_struct(op, Value) ->
+        Value.broadcast_in_dim(op, EXLA.Shape.make_shape(ans.type, ans.shape), {})
     end
   end
 
@@ -776,8 +795,8 @@ defmodule EXLA.Defn do
     strides = opts[:strides]
     input_dilation = opts[:input_dilation]
     kernel_dilation = opts[:kernel_dilation]
-    feature_groups = opts[:feature_group_size]
-    batch_groups = opts[:batch_group_size]
+    feature_group_count = opts[:feature_group_size]
+    batch_group_count = opts[:batch_group_size]
 
     %{type: output_type} = ans
 
@@ -790,24 +809,42 @@ defmodule EXLA.Defn do
       opts[:output_permutation]
       |> List.to_tuple()
 
-    conv_dim_nos = {input_permutation, kernel_permutation, output_permutation}
+    dimension_numbers = {input_permutation, kernel_permutation, output_permutation}
 
     # Ensure both types are floating
     operand = to_type(operand, output_type)
     kernel = to_type(kernel, output_type)
 
-    EXLA.Op.conv_general_dilated(
-      operand,
-      kernel,
-      strides,
-      padding,
-      input_dilation,
-      kernel_dilation,
-      conv_dim_nos,
-      feature_groups,
-      batch_groups,
-      state.precision
-    )
+    case operand do
+      %Value{} ->
+        Value.convolution(
+          operand,
+          kernel,
+          strides,
+          padding,
+          input_dilation,
+          kernel_dilation,
+          dimension_numbers,
+          feature_group_count,
+          batch_group_count,
+          state.precision,
+          ans.shape
+        )
+
+      _ ->
+        EXLA.Op.conv_general_dilated(
+          operand,
+          kernel,
+          strides,
+          padding,
+          input_dilation,
+          kernel_dilation,
+          dimension_numbers,
+          feature_group_count,
+          batch_group_count,
+          state.precision
+        )
+    end
   end
 
   defp to_operator(
@@ -1008,7 +1045,14 @@ defmodule EXLA.Defn do
     apply(EXLA.Op, op, [to_type(arg, type)])
   end
 
+  defp to_operator(:fft, [%Value{} | _] = args, out, state),
+    do: fft(&Value.fft(&1, :fft, &2), args, out, state)
+
   defp to_operator(:fft, args, out, state), do: fft(&EXLA.Op.fft/2, args, out, state)
+
+  defp to_operator(:ifft, [%Value{} | _] = args, out, state),
+    do: fft(&Value.fft(&1, :ifft, &2), args, out, state)
+
   defp to_operator(:ifft, args, out, state), do: fft(&EXLA.Op.ifft/2, args, out, state)
 
   defp to_operator(:is_nan, [%Value{} = arg], _out, _state),
@@ -1027,6 +1071,17 @@ defmodule EXLA.Defn do
   # we cannot mess with the output type (e.g. the to_type conversion)
   # because it will throw an error
   @complex_op [:real, :imag]
+
+  defp to_operator(op, [%Value{} = arg], %{type: type}, _state) when op in @complex_op do
+    maybe_cast_arg =
+      if Nx.Type.integer?(op_type(arg)) do
+        to_type(arg, type)
+      else
+        arg
+      end
+
+    apply(Value, op, [maybe_cast_arg])
+  end
 
   defp to_operator(op, [arg], %{type: type}, _state) when op in @complex_op do
     maybe_cast_arg =
@@ -1147,6 +1202,30 @@ defmodule EXLA.Defn do
 
   defp to_operator(
          :window_scatter_max,
+         [%Value{} = arg, %Value{} = source, %Value{} = init_value, window_dimensions, opts],
+         %{type: type},
+         _state
+       ) do
+    padding_config = opts[:padding]
+    strides = opts[:strides]
+
+    arg = to_type(arg, type)
+    source = to_type(source, type)
+    init_value = to_type(init_value, type)
+
+    Value.select_and_scatter(
+      arg,
+      source,
+      init_value,
+      :gt,
+      Tuple.to_list(window_dimensions),
+      strides,
+      padding_config
+    )
+  end
+
+  defp to_operator(
+         :window_scatter_max,
          [arg, source, init_value, window_dimensions, opts],
          %{type: type},
          state
@@ -1171,6 +1250,30 @@ defmodule EXLA.Defn do
       source,
       init_value,
       scatter_fn
+    )
+  end
+
+  defp to_operator(
+         :window_scatter_min,
+         [%Value{} = arg, %Value{} = source, %Value{} = init_value, window_dimensions, opts],
+         %{type: type},
+         _state
+       ) do
+    padding_config = opts[:padding]
+    strides = opts[:strides]
+
+    arg = to_type(arg, type)
+    source = to_type(source, type)
+    init_value = to_type(init_value, type)
+
+    Value.select_and_scatter(
+      arg,
+      source,
+      init_value,
+      :lt,
+      Tuple.to_list(window_dimensions),
+      strides,
+      padding_config
     )
   end
 
@@ -1204,6 +1307,10 @@ defmodule EXLA.Defn do
     )
   end
 
+  defp to_operator(:indexed_add, [%Value{} | _] = tensors, out, _state) do
+    mlir_scatter(tensors, out, :add)
+  end
+
   defp to_operator(
          :indexed_add,
          tensors,
@@ -1214,6 +1321,10 @@ defmodule EXLA.Defn do
     scatter_fn = op_computation(:add, args, state)
 
     scatter(scatter_fn, tensors, out)
+  end
+
+  defp to_operator(:indexed_put, [%Value{} | _] = tensors, out, _state) do
+    mlir_scatter(tensors, out, :put)
   end
 
   defp to_operator(:indexed_put, tensors, out, state) do
@@ -1458,7 +1569,7 @@ defmodule EXLA.Defn do
     EXLA.Lib.argsort(state.builder, tensor, dimension, comp, ans.type)
   end
 
-  defp fft(exla_op, [tensor, opts], %{type: type}, state) do
+  defp fft(exla_op, [%mod{} = tensor, opts], %{type: type}, state) do
     n = opts[:length]
     axis = opts[:axis]
     output_type = Nx.Type.to_complex(type)
@@ -1481,15 +1592,15 @@ defmodule EXLA.Defn do
         |> List.to_tuple()
 
       tensor
-      |> EXLA.Op.transpose(permutation)
+      |> mod.transpose(permutation)
       |> exla_op.([n])
-      |> EXLA.Op.transpose(permutation)
+      |> mod.transpose(permutation)
     else
       exla_op.(tensor, [n])
     end
   end
 
-  defp fft2(exla_op, [tensor, opts], %{type: type}, state) do
+  defp fft2(exla_op, [%mod{} = tensor, opts], %{type: type}, state) do
     [l1, l2] = lengths = opts[:lengths]
     [ax1, ax2] = axes = opts[:axes]
     output_type = Nx.Type.to_complex(type)
@@ -1518,9 +1629,9 @@ defmodule EXLA.Defn do
         |> List.to_tuple()
 
       tensor
-      |> EXLA.Op.transpose(permutation)
+      |> mod.transpose(permutation)
       |> exla_op.(lengths)
-      |> EXLA.Op.transpose(permutation)
+      |> mod.transpose(permutation)
     else
       exla_op.(tensor, lengths)
     end
@@ -1541,18 +1652,67 @@ defmodule EXLA.Defn do
         starts = List.duplicate(0, tuple_size(shape))
         strides = List.duplicate(1, tuple_size(shape))
 
-        EXLA.Op.slice(tensor, starts, lengths, strides)
+        case tensor do
+          %Value{} ->
+            limit_indices = Enum.zip_with(starts, lengths, fn i, len -> i + len end)
+            Value.slice(tensor, starts, limit_indices, strides)
+
+          _ ->
+            EXLA.Op.slice(tensor, starts, lengths, strides)
+        end
 
       m < n ->
-        zero = EXLA.Op.constant_r0(state.builder, Complex.new(0), output_type)
+        zero =
+          case tensor do
+            %Value{function: func} ->
+              Value.constant_r0(func, Complex.new(0), output_type)
+
+            _ ->
+              EXLA.Op.constant_r0(state.builder, Complex.new(0), output_type)
+          end
 
         padding_config =
           {0, 0, 0}
           |> List.duplicate(tuple_size(shape))
           |> List.replace_at(axis, {0, n - m, 0})
 
-        EXLA.Op.pad(tensor, zero, padding_config)
+        case tensor do
+          %Value{} ->
+            Value.pad(tensor, zero, padding_config)
+
+          _ ->
+            EXLA.Op.pad(tensor, zero, padding_config)
+        end
     end
+  end
+
+  defp mlir_scatter([target, indices, updates], %{type: type}, kind) when kind in [:add, :put] do
+    target = to_type(target, type)
+    updates = to_type(updates, type)
+
+    rank = target |> op_shape() |> tuple_size()
+    # indices_rank is guaranteed to be 2 by Nx.Shape
+    indices_rank = 2
+    rank_diff = rank - indices_rank + 1
+
+    indices_shape = op_shape(indices)
+
+    indices_shape =
+      [List.duplicate(1, rank_diff) | Tuple.to_list(indices_shape)]
+      |> List.flatten()
+      |> List.to_tuple()
+
+    indices = Value.reshape(indices, indices_shape)
+
+    # If indices has shape {x, y}, updates is guaranteed by Nx.Shape to
+    # have shape {x}, so if we reshaped indices to {..., x, y}, we need to
+    # reshape updates to {..., x}
+
+    updates_shape = Tuple.delete_at(indices_shape, tuple_size(indices_shape) - 1)
+
+    updates = Value.reshape(updates, updates_shape)
+
+    Value.scatter(target, indices, updates, kind)
   end
 
   defp scatter(scatter_fn, [target, indices, updates], %{type: type}) do

@@ -48,6 +48,9 @@ class MLIRFunction {
   mlir::Value BitcastConvertOp(mlir::Value operand, xla::Shape shape);
   mlir::Value PadOp(mlir::Value op, mlir::Value pad, std::vector<int64_t> padding_low, std::vector<int64_t> padding_high, std::vector<int64_t> padding_mid);
   mlir::Value AbsOp(mlir::Value operand);
+  mlir::Value RealOp(mlir::Value operand);
+  mlir::Value ImagOp(mlir::Value operand);
+  mlir::Value ConjOp(mlir::Value operand);
   mlir::Value ExpOp(mlir::Value operand);
   mlir::Value Expm1Op(mlir::Value operand);
   mlir::Value FloorOp(mlir::Value operand);
@@ -93,6 +96,10 @@ class MLIRFunction {
   mlir::Value OptimizationBarrierOp(mlir::Value operand);
   mlir::Value ClampOp(mlir::Value min, mlir::Value operand, mlir::Value max);
   mlir::Value SelectOp(mlir::Value pred, mlir::Value on_true, mlir::Value on_false);
+  mlir::Value ScatterOp(mlir::Value target, mlir::Value indices, mlir::Value updates, bool add_or_put);
+  mlir::Value SelectAndScatterOp(mlir::Value target, mlir::Value source, mlir::Value init_value, bool gt_or_lt, std::vector<int64_t> window_dimensions, std::vector<int64_t> window_strides, std::vector<int64_t> padding);
+  mlir::Value FFTOp(mlir::Value tensor, bool forward_fft, std::vector<int64_t> fft_lenght);
+  mlir::Value ConvOp(mlir::Value tensor, mlir::Value kernel, std::vector<int64_t> window_strides, std::vector<int64_t> padding, std::vector<int64_t> tensor_dilation, std::vector<int64_t> kernel_dilation, xla::ConvolutionDimensionNumbers dimension_numbers, uint64_t feature_group_count, uint64_t batch_group_count, uint64_t precision_config, std::vector<int64_t> output_dims);
   ERL_NIF_TERM ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM value_ptr, std::vector<int64_t> dims = {});
   int get_mlir_type(ErlNifEnv *env, ERL_NIF_TERM term, mlir::Type *type);
 
@@ -111,8 +118,8 @@ class MLIRModule {
 
   MLIRFunction *CreateFunction(
       std::string name,
-      std::vector<std::pair<std::vector<tsl::int64>, int>> arg_types,
-      std::pair<std::vector<tsl::int64>, int> ret_type);
+      std::vector<std::pair<std::vector<tsl::int64>, xla::PrimitiveType>> arg_types,
+      std::pair<std::vector<tsl::int64>, xla::PrimitiveType> ret_type);
 
   mlir::ModuleOp module() { return module_.get(); }
   mlir::OpBuilder *builder() { return builder_.get(); }
@@ -126,7 +133,7 @@ class MLIRModule {
   std::vector<mlir::Type> input_types_;
 };
 
-mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, int type_int);
+mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, xla::PrimitiveType type_int);
 
 xla::PrimitiveType MLIRTypeToPrimitiveType(mlir::Type);
 }  // namespace exla

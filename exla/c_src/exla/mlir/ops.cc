@@ -78,8 +78,8 @@ ERL_NIF_TERM create_mlir_function(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
 
   exla::MLIRModule** module;
   std::string func_name;
-  std::vector<std::pair<std::vector<exla::int64>, int>> arg_types;
-  std::pair<std::vector<exla::int64>, int> ret_type;
+  std::vector<std::pair<std::vector<exla::int64>, xla::PrimitiveType>> arg_types;
+  std::pair<std::vector<exla::int64>, xla::PrimitiveType> ret_type;
   std::vector<xla::Shape*> arg_shapes;
 
   if (!exla::nif::get<exla::MLIRModule*>(env, argv[0], module)) {
@@ -96,7 +96,7 @@ ERL_NIF_TERM create_mlir_function(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
   absl::Span<const int64_t> span;
 
   for (xla::Shape* shape : arg_shapes) {
-    int type = shape->element_type();
+    xla::PrimitiveType type = shape->element_type();
     if (type == -1) {
       return exla::nif::error(env, "Invalid argument type received.");
     }
@@ -111,7 +111,7 @@ ERL_NIF_TERM create_mlir_function(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     return exla::nif::error(env, "Unable to get return.");
   }
 
-  int type = ret_shape->element_type();
+  xla::PrimitiveType type = ret_shape->element_type();
   if (type == -1) {
     return exla::nif::error(env, "Invalid output type received.");
   }
@@ -429,6 +429,15 @@ ERL_NIF_TERM mlir_clz(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
 }
 ERL_NIF_TERM mlir_population_count(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
   return MLIR_UNARY_OP(PopulationCountOp);
+}
+ERL_NIF_TERM mlir_real(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  return MLIR_UNARY_OP(RealOp);
+}
+ERL_NIF_TERM mlir_imag(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  return MLIR_UNARY_OP(ImagOp);
+}
+ERL_NIF_TERM mlir_conjugate(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  return MLIR_UNARY_OP(ConjOp);
 }
 
 ERL_NIF_TERM mlir_iota(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
@@ -958,4 +967,184 @@ ERL_NIF_TERM dump_mlir_module(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
   (*builder)->module().dump();
 
   return exla::nif::ok(env);
+}
+
+ERL_NIF_TERM mlir_scatter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 5) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value *target, *indices, *updates;
+  bool add_or_put;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], target)) {
+    return exla::nif::error(env, "Unable to get target.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], indices)) {
+    return exla::nif::error(env, "Unable to get indices.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[3], updates)) {
+    return exla::nif::error(env, "Unable to get updates.");
+  }
+  if (!exla::nif::get(env, argv[4], &add_or_put)) {
+    return exla::nif::error(env, "Unable to get add_or_put.");
+  }
+
+  mlir::Value res = (*function)->ScatterOp(*target, *indices, *updates, add_or_put);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_select_and_scatter(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 8) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value *target, *source, *init_value;
+  bool add_or_put, gt_or_lt;
+
+  std::vector<int64_t> window_dimensions, window_strides;
+  std::vector<std::pair<exla::int64, exla::int64>> padding_config;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], target)) {
+    return exla::nif::error(env, "Unable to get target.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], source)) {
+    return exla::nif::error(env, "Unable to get source.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[3], init_value)) {
+    return exla::nif::error(env, "Unable to get init_value.");
+  }
+  if (!exla::nif::get(env, argv[4], &gt_or_lt)) {
+    return exla::nif::error(env, "Unable to get gt_or_lt.");
+  }
+  if (!exla::nif::get_list(env, argv[5], window_dimensions)) {
+    return exla::nif::error(env, "Unable to get window_dimensions.");
+  }
+  if (!exla::nif::get_list(env, argv[6], window_strides)) {
+    return exla::nif::error(env, "Unable to get window_strides.");
+  }
+  if (!exla::nif::get_general_padding(env, argv[7], padding_config)) {
+    return exla::nif::error(env, "Unable to get padding configuration.");
+  }
+
+  std::vector<int64_t> padding;
+
+  for (std::pair<exla::int64, exla::int64> item : padding_config) {
+    padding.push_back(item.first);
+    padding.push_back(item.second);
+  }
+
+  mlir::Value res = (*function)->SelectAndScatterOp(*target, *source, *init_value, gt_or_lt, window_dimensions, window_strides, padding);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_fft(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 4) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value* operand;
+  bool forward_fft;
+
+  std::vector<int64_t> fft_length;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], operand)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get(env, argv[2], &forward_fft)) {
+    return exla::nif::error(env, "Unable to get forward_fft.");
+  }
+  if (!exla::nif::get_list(env, argv[3], fft_length)) {
+    return exla::nif::error(env, "Unable to get fft_length.");
+  }
+
+  mlir::Value res = (*function)->FFTOp(*operand, forward_fft, fft_length);
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
+}
+
+ERL_NIF_TERM mlir_convolution(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[]) {
+  if (argc != 12) {
+    return exla::nif::error(env, "Bad argument count.");
+  }
+
+  exla::MLIRFunction** function;
+  mlir::Value *tensor, *kernel;
+  std::vector<int64_t> strides;
+  std::vector<std::pair<int64_t, int64_t>> padding_config;
+  std::vector<int64_t> tensor_dilation;
+  std::vector<int64_t> kernel_dilation;
+  xla::ConvolutionDimensionNumbers dimension_numbers;
+  uint64_t feature_group_count, batch_group_count, precision_config;
+  std::vector<int64_t> output_dims;
+
+  if (!exla::nif::get<exla::MLIRFunction*>(env, argv[0], function)) {
+    return exla::nif::error(env, "Unable to get function.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[1], tensor)) {
+    return exla::nif::error(env, "Unable to get operand.");
+  }
+  if (!exla::nif::get<mlir::Value>(env, argv[2], kernel)) {
+    return exla::nif::error(env, "Unable to get kernel.");
+  }
+  if (!exla::nif::get_list(env, argv[3], strides)) {
+    return exla::nif::error(env, "Unable to get strides.");
+  }
+  if (!exla::nif::get_general_padding(env, argv[4], padding_config)) {
+    return exla::nif::error(env, "Unable to get padding_config.");
+  }
+  if (!exla::nif::get_list(env, argv[5], tensor_dilation)) {
+    return exla::nif::error(env, "Unable to get operand dilation.");
+  }
+  if (!exla::nif::get_list(env, argv[6], kernel_dilation)) {
+    return exla::nif::error(env, "Unable to get kernel dilation.");
+  }
+  if (!exla::nif::get_conv_dimension_numbers(env, argv[7], &dimension_numbers)) {
+    return exla::nif::error(env, "Unable to get conv dimension numbers.");
+  }
+  if (!exla::nif::get(env, argv[8], &feature_group_count)) {
+    return exla::nif::error(env, "Unable to get feature groups.");
+  }
+  if (!exla::nif::get(env, argv[9], &batch_group_count)) {
+    return exla::nif::error(env, "Unable to get batch groups.");
+  }
+  if (!exla::nif::get(env, argv[10], &precision_config)) {
+    return exla::nif::error(env, "Unable to get precision config.");
+  }
+  if (!exla::nif::get_list(env, argv[11], output_dims)) {
+    return exla::nif::error(env, "Unable to get output_dims.");
+  }
+
+  std::vector<int64_t> padding;
+
+  for (std::pair<exla::int64, exla::int64> item : padding_config) {
+    padding.push_back(item.first);
+    padding.push_back(item.second);
+  }
+
+  mlir::Value res = (*function)->ConvOp(
+      *tensor,
+      *kernel,
+      strides,
+      padding,
+      tensor_dilation,
+      kernel_dilation,
+      dimension_numbers,
+      feature_group_count,
+      batch_group_count,
+      precision_config,
+      output_dims);
+
+  return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, res));
 }
