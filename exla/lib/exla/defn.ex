@@ -347,7 +347,8 @@ defmodule EXLA.Defn do
 
       EXLA.Executable.run(executable, [buffers], run_options)
     else
-      [result] -> [EXLA.Defn.Buffers.to_nx!(result, outputs)]
+      [result] ->
+        [EXLA.Defn.Buffers.to_nx!(result, outputs)]
     after
       EXLA.Defn.Lock.unlock(lock)
     end
@@ -552,8 +553,8 @@ defmodule EXLA.Defn do
          state,
          cache
        ) do
-    {tensor, cache} = recur_operator(tensor, state, cache)
-    {EXLA.Op.top_k(tensor, Keyword.fetch!(opts, :k)), cache}
+    {%mod{} = tensor, cache} = recur_operator(tensor, state, cache)
+    {mod.top_k(tensor, Keyword.fetch!(opts, :k)), cache}
   end
 
   defp cached_recur_operator(
@@ -884,6 +885,28 @@ defmodule EXLA.Defn do
       |> EXLA.Op.broadcast_in_dim(shape, broadcast_axes(op_shape(on_false), shape))
 
     EXLA.Op.select(pred, on_true, on_false)
+  end
+
+  defp to_operator(:triangular_solve, [%Value{} = a, b, opts], %{type: type}, _state) do
+    left_side = Keyword.fetch!(opts, :left_side)
+    lower = Keyword.fetch!(opts, :lower)
+    transform = Keyword.fetch!(opts, :transform_a)
+
+    case Value.get_shape(b).dims do
+      {_} = b_shape ->
+        b =
+          b
+          |> to_type(type)
+          |> Value.reshape(Tuple.append(b_shape, 1))
+
+        to_type(a, type)
+        |> Value.triangular_solve(b, left_side, lower, transform)
+        |> Value.reshape(b_shape)
+
+      _ ->
+        to_type(a, type)
+        |> Value.triangular_solve(to_type(b, type), left_side, lower, transform)
+    end
   end
 
   defp to_operator(:triangular_solve, [a, b, opts], %{type: type}, _state) do
@@ -1393,6 +1416,12 @@ defmodule EXLA.Defn do
       slice = EXLA.Op.dynamic_slice(tensor, start_indices, lengths)
       EXLA.Op.slice(slice, zeros, lengths, strides)
     end
+  end
+
+  defp to_operator(:put_slice, [%Value{} = tensor, start_indices, slice], ans, _state) do
+    tensor = to_type(tensor, ans.type)
+    slice = to_type(slice, ans.type)
+    Value.dynamic_update_slice(tensor, slice, start_indices)
   end
 
   defp to_operator(:put_slice, [tensor, start_indices, slice], ans, _state) do
