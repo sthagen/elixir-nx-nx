@@ -239,8 +239,7 @@ defmodule Torchx do
   deftensor transpose(tensor, dim0, dim1)
   deftensor permute(tensor, dims)
   deftensor split(tensor, split_size)
-  deftensor narrow(tensor, dim, start, length)
-  deftensor as_strided(tensor, size, strides, offset)
+  deftensor slice(tensor, starts, lengths, strides)
   deftensor concatenate(tensors, axis)
   deftensor gather(tensor_input, tensor_indices, axis)
   deftensor index(tensor_input, tensor_indices)
@@ -248,7 +247,7 @@ defmodule Torchx do
   deftensor argsort(tensor, axis, is_descending, stable)
   deftensor flip(tensor, axis)
   deftensor unfold(tensor, dimension, size, step)
-  deftensor put(tensor_input, tensor_index, tensor_source)
+  deftensor put(tensor_input, index, tensor_source)
   deftensor where(tensorA, tensorB, tensorC)
 
   ## Aggregation

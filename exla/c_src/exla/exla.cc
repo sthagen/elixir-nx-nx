@@ -473,10 +473,10 @@ ERL_NIF_TERM load_pjrt_plugin(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     return exla::nif::error(env, "Unable to get library path.");
   }
 
-  xla::Status result = pjrt::LoadPjrtPlugin(device_type, library_path);
+  auto result = pjrt::LoadPjrtPlugin(device_type, library_path);
 
   if (!result.ok()) {
-    return exla::nif::error(env, result.message().data());
+    return exla::nif::error(env, result.status().message().data());
   } else {
     return exla::nif::ok(env);
   }
@@ -678,7 +678,7 @@ static ErlNifFunc exla_funcs[] = {
     {"mlir_cbrt", 2, mlir_cbrt},
     {"mlir_iota", 3, mlir_iota},
     {"mlir_sort", 5, mlir_sort},
-    {"mlir_scatter", 5, mlir_scatter},
+    {"mlir_scatter", 9, mlir_scatter},
     {"mlir_select_and_scatter", 8, mlir_select_and_scatter},
     {"mlir_gather", 8, mlir_gather},
     {"mlir_reshape", 3, mlir_reshape},
