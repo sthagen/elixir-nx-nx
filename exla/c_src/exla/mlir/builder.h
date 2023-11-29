@@ -8,7 +8,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir/IR/Types.h"
+#include "stablehlo/reference/Types.h"
 #include "xla/shape.h"
 #include "xla/types.h"
 
@@ -104,7 +104,8 @@ class MLIRFunction {
   mlir::Value CreateTokenOp();
   mlir::Value TriangularSolveOp(mlir::Value a, mlir::Value b, bool left_side, bool lower, bool transpose_a);
   mlir::Value DynamicUpdateSliceOp(mlir::Value operand, mlir::Value update, std::vector<mlir::Value> start_indices);
-  std::vector<mlir::Value> ReduceOp(MLIRFunction * function, std::vector<mlir::Value> init_values, std::vector<mlir::Value> inputs, std::vector<int64_t> dimensions);
+  std::vector<mlir::Value> ReduceOp(MLIRFunction *function, std::vector<mlir::Value> init_values, std::vector<mlir::Value> inputs, std::vector<int64_t> dimensions);
+  mlir::Value MapOp(MLIRFunction *function, std::vector<mlir::Value> inputs, std::vector<int64_t> dimensions);
   ERL_NIF_TERM ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM value_ptr, std::vector<int64_t> dims = {});
   int get_mlir_type(ErlNifEnv *env, ERL_NIF_TERM term, mlir::Type *type);
 
@@ -112,7 +113,7 @@ class MLIRFunction {
 
   llvm::MutableArrayRef<mlir::BlockArgument> get_arguments() { return func_->getBody().front().getArguments(); }
 
-  mlir::func::FuncOp * function() { return func_.get(); }
+  mlir::func::FuncOp *function() { return func_.get(); }
 
  private:
   std::shared_ptr<MLIRModule> module_;
@@ -126,11 +127,12 @@ class MLIRModule {
   MLIRFunction *CreateFunction(
       std::string name,
       std::vector<xla::Shape *> arg_shapes,
-      xla::Shape *ret_shape);
+      xla::Shape *ret_shape, bool is_public);
 
   mlir::ModuleOp module() { return module_.get(); }
   mlir::OpBuilder *builder() { return builder_.get(); }
   mlir::MLIRContext *context() { return context_.get(); }
+  void LowerPatterns();
 
  private:
   std::unique_ptr<mlir::MLIRContext> context_;
