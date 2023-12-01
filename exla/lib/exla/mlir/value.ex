@@ -514,6 +514,29 @@ defmodule EXLA.MLIR.Value do
     %Value{ref: ref, function: pred.function}
   end
 
+  def infeed(%Value{function: function} = token, %EXLA.Shape{} = shape) do
+    ref = EXLA.NIF.mlir_infeed(function.ref, token.ref, shape.ref) |> unwrap!()
+
+    %Value{token | ref: ref}
+  end
+
+  def outfeed(%Value{function: function} = token, inputs) do
+    input_refs = Enum.map(inputs, & &1.ref)
+    ref = EXLA.NIF.mlir_outfeed(function.ref, token.ref, input_refs) |> unwrap!()
+    %{token | ref: ref}
+  end
+
+  def create_token(%Function{ref: ref} = function) do
+    ref = EXLA.NIF.mlir_create_token(ref) |> unwrap!()
+    %Value{ref: ref, function: function}
+  end
+
+  def call(%Function{ref: fun_ref} = function, args, %Function{ref: computation_ref}) do
+    arg_refs = Enum.map(args, & &1.ref)
+    ref = EXLA.NIF.mlir_call(fun_ref, arg_refs, computation_ref) |> unwrap!()
+    %Value{ref: ref, function: function}
+  end
+
   defp unwrap!({:ok, value}), do: value
   defp unwrap!(other), do: raise("#{inspect(other)}")
 end
