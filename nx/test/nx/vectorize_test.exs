@@ -549,6 +549,13 @@ defmodule Nx.VectorizeTest do
       end
     end
 
+    defn vectorized_cond_with_number_literal(value) do
+      cond do
+        value == 1 -> {value + 1, 2, Nx.Constants.i()}
+        true -> {value - 1, 1, 0}
+      end
+    end
+
     test "simple if" do
       # this tests the case where we have a single vectorized predicate
       pred = Nx.vectorize(~V[0 1 0], :pred)
@@ -727,6 +734,17 @@ defmodule Nx.VectorizeTest do
               2000 40
             ], pred1: 3, pred2: 2)
     end
+
+    test "vectorized pred with number literal" do
+      t = Nx.tensor([1, 2]) |> Nx.vectorize(:x)
+
+      assert vectorized_cond_with_number_literal(t) ==
+               {
+                 Nx.tensor([2, 1]) |> Nx.vectorize(:x),
+                 Nx.tensor([2, 1]) |> Nx.vectorize(:x),
+                 Nx.tensor([Complex.new(0, 1), 0]) |> Nx.vectorize(:x)
+               }
+    end
   end
 
   describe "access" do
@@ -782,6 +800,28 @@ defmodule Nx.VectorizeTest do
                  j: 2,
                  i: 3
                )
+    end
+
+    test "broadcast regression" do
+      t = Nx.iota({2, 3, 4}) |> Nx.vectorize([:a, :b])
+
+      result = Nx.broadcast(t[0], Nx.shape(t), names: Nx.names(t))
+
+      expected =
+        Nx.tensor([
+          [
+            [0, 0, 0, 0],
+            [4, 4, 4, 4],
+            [8, 8, 8, 8]
+          ],
+          [
+            [12, 12, 12, 12],
+            [16, 16, 16, 16],
+            [20, 20, 20, 20]
+          ]
+        ])
+
+      assert result == Nx.vectorize(expected, a: 2, b: 3)
     end
   end
 end
