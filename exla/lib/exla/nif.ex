@@ -27,7 +27,7 @@ defmodule EXLA.NIF do
 
   @unary_ops [:abs, :exp, :expm1, :floor, :ceil, :round] ++
                [:log, :log1p, :sigmoid, :sign, :cos] ++
-               [:sin, :acos, :asin, :atan, :cosh, :sinh] ++
+               [:sin, :tan, :acos, :asin, :atan, :cosh, :sinh] ++
                [:tanh, :acosh, :asinh, :atanh, :sqrt, :cbrt] ++
                [:bitwise_not, :erf, :erfc, :erf_inv] ++
                [:is_infinity, :is_nan, :rsqrt, :negate, :count_leading_zeros] ++
@@ -49,6 +49,19 @@ defmodule EXLA.NIF do
 
   def mlir_reduce(_function, _reducer, _init_values, _inputs, _dimensions),
     do: :erlang.nif_error(:undef)
+
+  def mlir_window_reduce(
+        _function,
+        _reducer,
+        _init_values,
+        _inputs,
+        _window_dimensions,
+        _window_strides,
+        _input_dilations,
+        _window_dilations,
+        _padding
+      ),
+      do: :erlang.nif_error(:undef)
 
   def mlir_map(_function, _mapper, _inputs, _dimensions),
     do: :erlang.nif_error(:undef)

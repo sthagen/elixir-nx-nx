@@ -1,58 +1,4 @@
-defmodule EXLA.MLIR.ExecutableFeedTest do
-  # infeed/outfeed are global resources, so they either
-  # need to be locked or we cannot run them concurrently.
-  use ExUnit.Case, async: false
-
-  alias EXLA.BinaryBuffer
-  alias EXLA.DeviceBuffer
-  alias EXLA.Client
-  alias EXLA.Shape
-  alias EXLA.MLIR.Value
-  import EXLAHelpers
-
-  describe "infeed/outfeed" do
-    test "successfully sends to/from device asynchronously" do
-      t = BinaryBuffer.from_binary(<<1::32-native>>, Shape.make_shape({:s, 32}, {}))
-
-      task =
-        Task.async(fn ->
-          :timer.tc(fn ->
-            run_one([], [compiler_mode: :mlir], Nx.template({}, {:s, 32}), fn b ->
-              token = Value.create_token(b)
-              val_and_token = Value.infeed(token, t.shape)
-              val = Value.get_tuple_element(val_and_token, 0)
-              new_token = Value.get_tuple_element(val_and_token, 1)
-              outfeed_val = Value.add(val, val)
-
-              _outfeed_token = Value.outfeed(new_token, [outfeed_val])
-              Value.tuple([Value.add(outfeed_val, val)])
-            end)
-          end)
-        end)
-
-      refute_received _
-      # sleep here to ensure that we have a known measureable delay in the task's execution
-      # that is correlated to how much time we wait for the infeed to have something in the queue
-      Process.sleep(1_000)
-      assert :ok = Client.to_infeed(client(), 0, [{t.data, t.shape}])
-      assert from_outfeed(client(), 0, Shape.make_shape({:s, 32}, {})) == <<2::32-native>>
-      assert {time, [a = %DeviceBuffer{}]} = Task.await(task)
-      assert time >= 1_000
-      assert DeviceBuffer.read(a) == <<3::32-native>>
-    end
-  end
-
-  defp from_outfeed(client, device_id, shape) do
-    ref = make_ref()
-    Client.from_outfeed(client, device_id, [shape], self(), ref)
-
-    receive do
-      {^ref, msg} -> msg
-    end
-  end
-end
-
-defmodule EXLA.MLIR.ExecutableTest do
+defmodule EXLA.MLIR.CompilerTest do
   use EXLA.Case, async: true
 
   import Nx.Defn
@@ -401,7 +347,6 @@ defmodule EXLA.MLIR.ExecutableTest do
       end
     end
 
-    # TO-DO (mlir): this case depends on broadcasting being available
     test "sign with unsigned input" do
       function = fn t -> Nx.sign(t) end
 
@@ -1102,6 +1047,35 @@ defmodule EXLA.MLIR.ExecutableTest do
       expected_result = Nx.Defn.jit(&while_nested_results/1, comiler: Nx.Defn.Evaluator).(t)
 
       assert_equal(mlir_result, expected_result)
+    end
+  end
+
+  describe "window_reduce" do
+    test "works" do
+      init_value = Nx.Constants.min_finite(:s64)
+      t = Nx.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+      opts = [padding: :same, strides: [1, 1]]
+
+      result =
+        EXLA.jit(
+          &Nx.window_reduce(
+            &1,
+            init_value,
+            {2, 2},
+            opts,
+            fn x, acc -> Nx.max(x, acc) end
+          ),
+          compiler_mode: :mlir
+        ).(t)
+
+      assert_equal(
+        result,
+        Nx.tensor([
+          [5, 6, 6],
+          [8, 9, 9],
+          [8, 9, 9]
+        ])
+      )
     end
   end
 end

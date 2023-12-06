@@ -62,6 +62,7 @@ class MLIRFunction {
   mlir::Value SignOp(mlir::Value operand);
   mlir::Value CosOp(mlir::Value operand);
   mlir::Value SinOp(mlir::Value operand);
+  mlir::Value TanOp(mlir::Value operand);
   mlir::Value AcosOp(mlir::Value operand);
   mlir::Value AsinOp(mlir::Value operand);
   mlir::Value AtanOp(mlir::Value operand);
@@ -105,9 +106,10 @@ class MLIRFunction {
   mlir::Value TriangularSolveOp(mlir::Value a, mlir::Value b, bool left_side, bool lower, bool transpose_a);
   mlir::Value DynamicUpdateSliceOp(mlir::Value operand, mlir::Value update, std::vector<mlir::Value> start_indices);
   std::vector<mlir::Value> ReduceOp(MLIRFunction *function, std::vector<mlir::Value> init_values, std::vector<mlir::Value> inputs, std::vector<int64_t> dimensions);
+  std::vector<mlir::Value> WindowReduceOp(MLIRFunction *function, std::vector<mlir::Value> init_values, std::vector<mlir::Value> inputs, std::vector<int64_t> window_dimensions, std::vector<int64_t> window_strides, std::vector<int64_t> input_dilations, std::vector<int64_t> window_dilations, std::vector<std::pair<int64_t, int64_t>> padding);
   mlir::Value MapOp(MLIRFunction *function, std::vector<mlir::Value> inputs, std::vector<int64_t> dimensions);
   mlir::Value IfOp(mlir::Value pred, xla::Shape output_shape, std::vector<mlir::Value> implicit_args, MLIRFunction *on_true, MLIRFunction *on_false);
-  ERL_NIF_TERM ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM value_ptr, std::vector<int64_t> dims = {});
+  ERL_NIF_TERM ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM value_ptr, std::optional<std::vector<int64_t>> dims = std::nullopt);
   mlir::Value InfeedOp(mlir::Value token, xla::Shape *shape);
   mlir::Value OutfeedOp(std::vector<mlir::Value> inputs, mlir::Value token);
   mlir::Value CallOp(std::vector<mlir::Value> inputs, MLIRFunction *computation);

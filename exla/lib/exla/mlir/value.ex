@@ -31,7 +31,7 @@ defmodule EXLA.MLIR.Value do
 
   @unary_ops [:abs, :exp, :expm1, :floor, :ceil, :round] ++
                [:log, :log1p, :sigmoid, :sign, :cos] ++
-               [:sin, :acos, :asin, :atan, :cosh, :sinh] ++
+               [:sin, :tan, :acos, :asin, :atan, :cosh, :sinh] ++
                [:tanh, :acosh, :asinh, :atanh, :sqrt, :cbrt] ++
                [:bitwise_not, :erf, :erfc, :erf_inv] ++
                [:is_infinity, :is_nan, :rsqrt, :negate, :count_leading_zeros] ++
@@ -471,6 +471,36 @@ defmodule EXLA.MLIR.Value do
 
     refs =
       EXLA.NIF.mlir_reduce(func.ref, reducer, init_value_refs, input_refs, dimensions)
+      |> unwrap!()
+
+    Enum.map(refs, &%Value{ref: &1, function: func})
+  end
+
+  def window_reduce(
+        %Function{ref: reducer},
+        [%Value{function: func} | _] = init_values,
+        [%Value{function: func} | _] = inputs,
+        window_dimensions,
+        window_strides,
+        input_dilations,
+        window_dilations,
+        padding
+      ) do
+    init_value_refs = Enum.map(init_values, & &1.ref)
+    input_refs = Enum.map(inputs, & &1.ref)
+
+    refs =
+      EXLA.NIF.mlir_window_reduce(
+        func.ref,
+        reducer,
+        init_value_refs,
+        input_refs,
+        window_dimensions,
+        window_strides,
+        input_dilations,
+        window_dilations,
+        padding
+      )
       |> unwrap!()
 
     Enum.map(refs, &%Value{ref: &1, function: func})

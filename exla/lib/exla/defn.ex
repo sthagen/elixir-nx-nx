@@ -766,8 +766,8 @@ defmodule EXLA.Defn do
     EXLA.Op.transpose(op, List.to_tuple(axes))
   end
 
-  defp to_operator(:squeeze, [op, _axes], ans, _state) do
-    EXLA.Op.reshape(op, ans.shape)
+  defp to_operator(:squeeze, [%mod{} = op, _axes], ans, _state) when mod in [EXLA.Op, Value] do
+    mod.reshape(op, ans.shape)
   end
 
   ## to_operator others
@@ -1071,6 +1071,15 @@ defmodule EXLA.Defn do
   @bin_pred_op [logical_and: :bitwise_and, logical_or: :bitwise_or, logical_xor: :bitwise_xor]
 
   for {logical, bitwise} <- @bin_pred_op do
+    defp to_operator(unquote(logical), [%Value{} = left, %Value{} = right], ans, _state) do
+      apply_mlir_broadcasted_bin_op(
+        unquote(bitwise),
+        ans,
+        to_mlir_logical(left),
+        to_mlir_logical(right)
+      )
+    end
+
     defp to_operator(unquote(logical), [left, right], _ans, _state) do
       type = {:pred, 8}
       dims = broadcast_axes(op_shape(left), op_shape(right))
@@ -1168,6 +1177,14 @@ defmodule EXLA.Defn do
 
   ## to_operator reduction
 
+  defp to_operator(:all, [arg, opts], %{shape: shape}, %{builder: %Function{}} = state) do
+    to_aggregate(:bitwise_and, {:u, 8}, shape, to_mlir_logical(arg), 1, opts, state)
+  end
+
+  defp to_operator(:any, [arg, opts], %{shape: shape}, %{builder: %Function{}} = state) do
+    to_aggregate(:bitwise_or, {:u, 8}, shape, to_mlir_logical(arg), 0, opts, state)
+  end
+
   defp to_operator(:all, [arg, opts], %{shape: shape}, state) do
     to_aggregate(:bitwise_and, {:pred, 8}, shape, arg, 1, opts, state)
   end
@@ -1239,6 +1256,33 @@ defmodule EXLA.Defn do
 
   defp to_operator(:window_product, [arg, window_dims, opts], %{type: type}, state) do
     to_window_aggregate(:multiply, type, arg, 1, window_dims, opts, state)
+  end
+
+  defp to_operator(
+         :window_reduce,
+         [arg, acc, window_dimensions, opts, fun],
+         %{type: type},
+         %{builder: %Function{}}
+       ) do
+    padding_config = opts[:padding]
+    strides = opts[:strides]
+    window_dilations = opts[:window_dilations]
+    arg = to_type(arg, type)
+    acc = to_type(acc, type)
+
+    [result] =
+      Value.window_reduce(
+        fun,
+        [acc],
+        [arg],
+        window_dimensions,
+        List.to_tuple(strides),
+        Tuple.duplicate(1, tuple_size(op_shape(arg))),
+        List.to_tuple(window_dilations),
+        padding_config
+      )
+
+    result
   end
 
   defp to_operator(
@@ -2466,7 +2510,6 @@ defmodule EXLA.Defn do
   # the branches, but that gets tricky with cond/if,
   # so we always perform the operation.
   defp cast_pred_to_u8(%Value{} = op) do
-    # TO-DO(mlir): validate exactly if we should be just passing the pred as-is here
     op
   end
 
@@ -2511,11 +2554,12 @@ defmodule EXLA.Defn do
   defp apply_mlir_broadcasted_bin_op(op, out, left, right) do
     left_shape = Value.get_shape(left)
     right_shape = Value.get_shape(right)
-    dims = broadcast_axes(left_shape.dims, right_shape.dims)
     out_shape = EXLA.Shape.make_shape(out.type, out.shape)
+    left_dims = broadcast_axes(left_shape.dims, out_shape.dims)
+    right_dims = broadcast_axes(right_shape.dims, out_shape.dims)
     type = out_shape.dtype
-    left = left |> to_type(type) |> Value.broadcast_in_dim(out_shape, dims)
-    right = right |> to_type(type) |> Value.broadcast_in_dim(out_shape, dims)
+    left = left |> to_type(type) |> Value.broadcast_in_dim(out_shape, left_dims)
+    right = right |> to_type(type) |> Value.broadcast_in_dim(out_shape, right_dims)
     apply(Value, op, [left, right])
   end
 
@@ -2532,5 +2576,9 @@ defmodule EXLA.Defn do
 
   defp collect_while_results_unflatten(%Value{} = value, _) do
     {value, []}
+  end
+
+  defp to_mlir_logical(%Value{} = value) do
+    to_type(value, {:pred, 8})
   end
 end

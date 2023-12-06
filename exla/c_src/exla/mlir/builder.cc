@@ -187,6 +187,21 @@ mlir::DenseIntElementsAttr Int64ToDenseIntElementsAttr(mlir::OpBuilder *builder,
   return llvm::cast<mlir::DenseIntElementsAttr>(dense_attr);
 }
 
+mlir::DenseIntElementsAttr Int64ToDenseIntElementsAttr(mlir::OpBuilder *builder, std::vector<std::pair<int64_t, int64_t>> vec_in) {
+  std::vector<int64_t> vec;
+  int64_t num_pairs = vec_in.size();
+  vec.reserve(num_pairs * 2);
+  for (auto pair : vec_in) {
+    vec.push_back(pair.first);
+    vec.push_back(pair.second);
+  }
+
+  int64_t num_entries[] = {num_pairs, 2};
+  auto type = mlir::RankedTensorType::get(llvm::ArrayRef(num_entries, 2), builder->getIntegerType(64));
+  auto dense_attr = mlir::DenseElementsAttr::get<int64_t>(type, llvm::ArrayRef<int64_t>(vec.data(), vec.size()));
+  return llvm::cast<mlir::DenseIntElementsAttr>(dense_attr);
+}
+
 MLIRFunction::MLIRFunction(MLIRModule *module, std::unique_ptr<mlir::func::FuncOp> func)
     : func_(std::move(func)),
       module_(module) {}
@@ -412,6 +427,11 @@ mlir::Value MLIRFunction::SinOp(mlir::Value operand) {
   return module_->builder()->create<mlir::stablehlo::SineOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
+mlir::Value MLIRFunction::TanOp(mlir::Value operand) {
+  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
+  return module_->builder()->create<mlir::chlo::TanOp>(module_->builder()->getUnknownLoc(), operand);
+}
+
 mlir::Value MLIRFunction::AcosOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
   module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
@@ -497,9 +517,26 @@ mlir::Value MLIRFunction::ErfcOp(mlir::Value operand) {
 mlir::Value MLIRFunction::IsInfOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
   module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
-  mlir::Value op = module_->builder()->create<mlir::chlo::IsInfOp>(module_->builder()->getUnknownLoc(), operand);
+  mlir::Value result;
+
+  mlir::RankedTensorType type = llvm::cast<mlir::RankedTensorType>(operand.getType());
+  mlir::Type element_type = type.getElementType();
+
+  if (element_type.isa<mlir::ComplexType>()) {
+    auto real_op = module_->builder()->create<mlir::stablehlo::RealOp>(module_->builder()->getUnknownLoc(), operand);
+    auto imag_op = module_->builder()->create<mlir::stablehlo::ImagOp>(module_->builder()->getUnknownLoc(), operand);
+
+    auto is_inf_real_op = this->ConvertOp(this->IsInfOp(real_op), element_type);
+    auto is_inf_imag_op = this->ConvertOp(this->IsInfOp(imag_op), element_type);
+    result = this->AddOp(is_inf_real_op, is_inf_imag_op);
+  } else if (element_type.isa<mlir::IntegerType>()) {
+    // integers are never infinity
+    return this->NotEqualOp(operand, operand);
+  } else {
+    result = module_->builder()->create<mlir::chlo::IsInfOp>(module_->builder()->getUnknownLoc(), operand);
+  }
   mlir::Type mlir_bool = module_->builder()->getIntegerType(8, false);
-  return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), op, mlir_bool);
+  return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), result, mlir_bool);
 }
 
 mlir::Value MLIRFunction::IsNanOp(mlir::Value operand) {
@@ -772,6 +809,44 @@ mlir::Value MLIRFunction::ScatterOp(mlir::Value target, mlir::Value indices, mli
   return scatter_op.getResult(0);
 }
 
+std::vector<mlir::Value> MLIRFunction::WindowReduceOp(
+    MLIRFunction *reducer,
+    std::vector<mlir::Value> init_values,
+    std::vector<mlir::Value> inputs,
+    std::vector<int64_t> window_dimensions,
+    std::vector<int64_t> window_strides,
+    std::vector<int64_t> input_dilations,
+    std::vector<int64_t> window_dilations,
+    std::vector<std::pair<int64_t, int64_t>> padding) {
+  auto builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
+
+  mlir::ValueRange init_values_range(init_values);
+  mlir::ValueRange inputs_range(inputs);
+  mlir::DenseIntElementsAttr window_dimensions_attr = Int64ToDenseIntElementsAttr(builder, window_dimensions);
+  mlir::DenseIntElementsAttr window_strides_attr = Int64ToDenseIntElementsAttr(builder, window_strides);
+  mlir::DenseIntElementsAttr input_dilations_attr = Int64ToDenseIntElementsAttr(builder, input_dilations);
+  mlir::DenseIntElementsAttr window_dilations_attr = Int64ToDenseIntElementsAttr(builder, window_dilations);
+  mlir::DenseIntElementsAttr padding_attr = Int64ToDenseIntElementsAttr(builder, padding);
+
+  mlir::stablehlo::ReduceWindowOp reduce_window_op = builder->create<mlir::stablehlo::ReduceWindowOp>(
+      builder->getUnknownLoc(),
+      inputs_range,
+      init_values_range,
+      window_dimensions_attr,
+      window_strides_attr,
+      input_dilations_attr,
+      window_dilations_attr,
+      padding_attr);
+
+  mlir::Region &reduceBody = reduce_window_op.getRegion();
+  mlir::Region &funcBody = reducer->function()->getBody();
+  reduceBody.getBlocks().splice(reduceBody.end(), funcBody.getBlocks());
+
+  mlir::Operation::result_range results = reduce_window_op.getResults();
+  return std::vector<mlir::Value>(results.begin(), results.end());
+}
+
 std::vector<mlir::Value> MLIRFunction::ReduceOp(
     MLIRFunction *reducer,
     std::vector<mlir::Value> init_values,
@@ -922,12 +997,14 @@ mlir::Value MLIRFunction::FFTOp(mlir::Value tensor, bool forward_fft, std::vecto
 }
 
 template <typename T>
-ERL_NIF_TERM ConstantOpImpl(mlir::OpBuilder *builder, mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM term, std::vector<int64_t> dims) {
+ERL_NIF_TERM ConstantOpImpl(mlir::OpBuilder *builder, mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM term, std::optional<std::vector<int64_t>> dims_opt) {
+  bool scalar = !dims_opt;
+  std::vector<int64_t> dims = scalar ? std::vector<int64_t>(0) : dims_opt.value();
+
   mlir::RankedTensorType ty = mlir::RankedTensorType::get(dims, type);
   mlir::DenseElementsAttr attr;
 
-  if (dims.size() == 0) {
-    // this is the scalar case
+  if (scalar) {
     T value;
     if (!exla::nif::get(env, term, &value)) {
       return exla::nif::error(env, "Unable to cast scalar to type.");
@@ -951,7 +1028,7 @@ ERL_NIF_TERM ConstantOpImpl(mlir::OpBuilder *builder, mlir::Type type, ErlNifEnv
   return exla::nif::ok(env, exla::nif::make<mlir::Value>(env, op));
 }
 
-ERL_NIF_TERM MLIRFunction::ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM term, std::vector<int64_t> dims) {
+ERL_NIF_TERM MLIRFunction::ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_TERM term, std::optional<std::vector<int64_t>> dims) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
 
   if (type.isUnsignedInteger(8)) {
