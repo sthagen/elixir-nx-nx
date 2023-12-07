@@ -586,6 +586,29 @@ defmodule EXLA.Defn do
 
   defp cached_recur_operator(
          :optional,
+         %T{data: %Expr{args: [%{data: %{op: :top_k, args: [tensor, opts]}}, _expr, _callback]}} =
+           _out,
+         state,
+         cache
+       ) do
+    {tensor, cache} = recur_operator(tensor, state, cache)
+
+    result =
+      case state.builder do
+        %Function{} ->
+          tensor
+          |> Value.top_k(opts[:k])
+          |> Value.tuple()
+
+        %EXLA.Builder{} ->
+          EXLA.Op.top_k(tensor, opts[:k])
+      end
+
+    {result, cache}
+  end
+
+  defp cached_recur_operator(
+         :optional,
          %T{data: %Expr{args: [%{data: %{op: :fft2, args: [tensor, opts]}}, _expr, _callback]}} =
            out,
          state,
@@ -726,9 +749,15 @@ defmodule EXLA.Defn do
     iota_shape = EXLA.Shape.make_shape(iota_type, shape)
     rank = tuple_size(shape)
 
-    i0 = EXLA.Op.iota(state.builder, iota_shape, rank - 2)
-    i1 = EXLA.Op.iota(state.builder, iota_shape, rank - 1)
-    to_type(EXLA.Op.equal(i0, i1), type)
+    mod =
+      case state.builder do
+        %Function{} -> Value
+        _ -> EXLA.Op
+      end
+
+    i0 = mod.iota(state.builder, iota_shape, rank - 2)
+    i1 = mod.iota(state.builder, iota_shape, rank - 1)
+    to_type(mod.equal(i0, i1), type)
   end
 
   ## to_operator shape
@@ -751,7 +780,7 @@ defmodule EXLA.Defn do
 
   defp to_operator(:broadcast, [%Value{} = op, _shape, axes], ans, _state) do
     out_shape = EXLA.Shape.make_shape(ans.type, ans.shape)
-    Value.broadcast_in_dim(op, out_shape, List.to_tuple(axes))
+    Value.broadcast_in_dim(to_type(op, ans.type), out_shape, List.to_tuple(axes))
   end
 
   defp to_operator(:broadcast, [op, _shape, axes], ans, _state) do
@@ -1046,9 +1075,8 @@ defmodule EXLA.Defn do
     apply(EXLA.Op, op, [to_type(left, type), to_type(right, type), dims])
   end
 
-  defp to_operator(:quotient, [left, right], %{type: type}, _state) do
-    dims = broadcast_axes(op_shape(left), op_shape(right))
-    apply(EXLA.Op, :divide, [to_type(left, type), to_type(right, type), dims])
+  defp to_operator(:quotient, [left, right], ans, state) do
+    to_operator(:divide, [to_type(left, ans.type), to_type(right, ans.type)], ans, state)
   end
 
   @bin_comp_op [:equal, :not_equal, :greater, :less, :greater_equal, :less_equal]
@@ -1527,7 +1555,7 @@ defmodule EXLA.Defn do
     EXLA.Op.dynamic_update_slice(tensor, slice, start_indices)
   end
 
-  defp to_operator(:take, [tensor, indices, axis], _ans, _state) do
+  defp to_operator(:take, [%mod{} = tensor, indices, axis], _ans, _state) do
     tensor_rank = tensor |> op_shape() |> tuple_size()
     indices_rank = indices |> op_shape() |> tuple_size()
     result_rank = tensor_rank - 1 + indices_rank
@@ -1538,7 +1566,7 @@ defmodule EXLA.Defn do
     collapsed_slice_dims = [axis]
     start_index_map = [axis]
 
-    EXLA.Op.gather(
+    mod.gather(
       tensor,
       indices,
       index_vector_dim,
@@ -1549,7 +1577,7 @@ defmodule EXLA.Defn do
     )
   end
 
-  defp to_operator(:take_along_axis, [tensor, indices, axis], _ans, state) do
+  defp to_operator(:take_along_axis, [%mod{} = tensor, indices, axis], _ans, state) do
     indices_shape = op_shape(indices)
     indices_rank = tuple_size(indices_shape)
 
@@ -1561,11 +1589,11 @@ defmodule EXLA.Defn do
     collapsed_slice_dims = Enum.to_list(axes_range)
     start_index_map = Enum.to_list(axes_range)
 
-    indices_exla_shape = EXLA.Op.get_shape(indices)
+    indices_exla_shape = mod.get_shape(indices)
 
     iotas =
       Enum.map(axes_range, fn axis ->
-        EXLA.Op.iota(state.builder, indices_exla_shape, axis)
+        mod.iota(state.builder, indices_exla_shape, axis)
       end)
 
     new_axis_shape = Tuple.append(indices_shape, 1)
@@ -1573,10 +1601,10 @@ defmodule EXLA.Defn do
     indices =
       iotas
       |> List.replace_at(axis, indices)
-      |> Enum.map(&EXLA.Op.reshape(&1, new_axis_shape))
-      |> EXLA.Op.concatenate(indices_rank)
+      |> Enum.map(&mod.reshape(&1, new_axis_shape))
+      |> mod.concatenate(indices_rank)
 
-    EXLA.Op.gather(
+    mod.gather(
       tensor,
       indices,
       index_vector_dim,
@@ -1587,22 +1615,7 @@ defmodule EXLA.Defn do
     )
   end
 
-  defp to_operator(:gather, [%Value{} = tensor, indices, opts], _ans, _state) do
-    axes = Keyword.fetch!(opts, :axes)
-    tensor_shape = op_shape(tensor)
-    tensor_rank = tuple_size(tensor_shape)
-    index_vector_dim = tuple_size(op_shape(indices)) - 1
-
-    slice_sizes =
-      for i <- 0..(tensor_rank - 1) do
-        if i in axes, do: 1, else: elem(tensor_shape, i)
-      end
-
-    offset_dims = axes_for_rank(tensor_rank) -- axes
-    Value.gather(tensor, indices, slice_sizes, offset_dims, axes, axes, index_vector_dim)
-  end
-
-  defp to_operator(:gather, [tensor, indices, opts], _ans, _state) do
+  defp to_operator(:gather, [%mod{} = tensor, indices, opts], _ans, _state) do
     axes = Keyword.fetch!(opts, :axes)
     tensor_shape = op_shape(tensor)
     tensor_rank = tuple_size(tensor_shape)
@@ -1616,7 +1629,7 @@ defmodule EXLA.Defn do
 
     batch_size = tensor_rank - length(axes)
     offset_dims = count_up(batch_size, batch_size)
-    EXLA.Op.gather(tensor, indices, index_vector_dim, slice_sizes, offset_dims, axes, axes)
+    mod.gather(tensor, indices, index_vector_dim, slice_sizes, offset_dims, axes, axes)
   end
 
   defp to_operator(:reverse, [%Value{} = tensor, axes], _ans, _state) do
@@ -1659,11 +1672,7 @@ defmodule EXLA.Defn do
     EXLA.Op.select(EXLA.Op.less_equal(iota_one, iota_zero), cholesky, zeros)
   end
 
-  defp to_operator(:sort, [%Value{} = tensor, opts], _ans, _state) do
-    Value.sort(tensor, opts[:axis], opts[:direction], opts[:stable] == true)
-  end
-
-  defp to_operator(:sort, [tensor, opts], ans, state) do
+  defp to_operator(:sort, [%mod{} = tensor, opts], ans, state) do
     dimension = opts[:axis]
 
     op =
@@ -1675,17 +1684,7 @@ defmodule EXLA.Defn do
     args = [%{type: ans.type, shape: {}}, %{type: ans.type, shape: {}}]
 
     comp = sort_computation(op, ans.type, args, state)
-    EXLA.Op.sort(tensor, comp, dimension, opts[:stable] == true)
-  end
-
-  defp to_operator(:argsort, [%Value{} = tensor, opts], ans, _state) do
-    dimension = opts[:axis]
-    stable = opts[:stable] == true
-    dims = op_shape(tensor)
-    iota_shape = EXLA.Shape.make_shape(ans.type, dims)
-    iota = EXLA.Lib.iota(tensor.function, iota_shape, dimension)
-    [_, arg] = Value.sort([tensor, iota], dimension, opts[:direction], stable)
-    arg
+    mod.sort(tensor, comp, dimension, opts[:stable] == true)
   end
 
   defp to_operator(:argsort, [tensor, opts], ans, state) do
@@ -1708,6 +1707,7 @@ defmodule EXLA.Defn do
     ]
 
     comp = sort_computation(op, type, args, state)
+
     EXLA.Lib.argsort(state.builder, tensor, dimension, stable, comp, ans.type)
   end
 
@@ -1873,6 +1873,42 @@ defmodule EXLA.Defn do
 
   ## Computation helpers
 
+  defp sort_computation(op, type, args, %{builder: %EXLA.MLIR.Function{} = builder}) do
+    %{module: module, name: name} = subbuilder(builder, Atom.to_string(op))
+
+    arg_shapes =
+      Enum.with_index(args, fn arg, i ->
+        {"p#{i}", computation_arg_shape(arg)}
+      end)
+
+    function =
+      EXLA.Builder.new(
+        {module, name},
+        arg_shapes,
+        struct(Nx.Tensor, %{type: {:pred, 8}, shape: {}}),
+        :mlir,
+        true
+      )
+
+    [lhs, rhs | _] = EXLA.MLIR.Function.get_arguments(function)
+
+    op =
+      cond do
+        Nx.Type.integer?(type) ->
+          apply(Value, op, [lhs, rhs])
+
+        op == :less ->
+          is_nan = Value.is_nan(rhs)
+          Value.bitwise_or(is_nan, Value.less(lhs, rhs))
+
+        op == :greater ->
+          is_nan = Value.is_nan(lhs)
+          Value.bitwise_or(is_nan, Value.greater(lhs, rhs))
+      end
+
+    EXLA.Builder.build(op)
+  end
+
   defp sort_computation(op, type, args, state) do
     subbuilder = subbuilder(state.builder, Atom.to_string(op))
 
@@ -1920,7 +1956,7 @@ defmodule EXLA.Defn do
 
     args = EXLA.MLIR.Function.get_arguments(function)
 
-    EXLA.Builder.build(apply(Value, op, prepare_args.(args)), true)
+    EXLA.Builder.build(apply(Value, op, prepare_args.(args)))
   end
 
   defp op_computation(op, args, _out, state, prepare_args) do
@@ -1962,7 +1998,7 @@ defmodule EXLA.Defn do
     }
 
     {res, _} = recur_composite(expr, state, no_token_cache())
-    EXLA.Builder.build(to_type(res, type), true)
+    EXLA.Builder.build(to_type(res, type))
   end
 
   defp fun_computation(name, args, expr, type, state) do
@@ -2084,7 +2120,7 @@ defmodule EXLA.Defn do
     {res, comp_cache} = recur_composite(expr, state, reset_token(cache, arg_token))
     res = Value.tuple([arg_token, res])
 
-    {EXLA.Builder.build(res, true), merge_outfeed(cache, comp_cache)}
+    {EXLA.Builder.build(res), merge_outfeed(cache, comp_cache)}
   end
 
   defp token_computation(name, arg, expr, state, cache) do
@@ -2277,13 +2313,19 @@ defmodule EXLA.Defn do
   defp to_window_aggregate(op, type, arg, initial, window_dimensions, opts, state) do
     arg = to_type(arg, type)
 
+    mod =
+      case state.builder do
+        %Function{} -> Value
+        _ -> EXLA.Op
+      end
+
     acc =
       case initial do
-        %EXLA.Op{} = initial ->
+        %^mod{} = initial ->
           initial
 
         initial when is_number(initial) ->
-          EXLA.Op.constant_r0(state.builder, initial, type)
+          mod.constant_r0(state.builder, initial, type)
       end
 
     args = [%{type: type, shape: {}}, %{type: type, shape: {}}]
@@ -2291,13 +2333,43 @@ defmodule EXLA.Defn do
     # returns :nan but :infinity + :nan returns :infinity.
     # So we want to keep the current value as first argument
     # to preserve such properties.
-    comp = op_computation(op, args, :unused, state, &Enum.reverse/1)
+    comp =
+      op_computation(
+        op,
+        args,
+        %{type: type, shape: {}},
+        state,
+        &Enum.reverse/1
+      )
 
     strides = opts[:strides]
     padding = opts[:padding]
     window_dilations = opts[:window_dilations]
 
-    EXLA.Op.window_reduce(arg, acc, comp, window_dimensions, strides, window_dilations, padding)
+    case mod do
+      Value ->
+        Value.window_reduce(
+          comp,
+          [acc],
+          [arg],
+          window_dimensions,
+          List.to_tuple(strides),
+          Tuple.duplicate(1, tuple_size(op_shape(arg))),
+          List.to_tuple(window_dilations),
+          padding
+        )
+
+      _ ->
+        EXLA.Op.window_reduce(
+          arg,
+          acc,
+          comp,
+          window_dimensions,
+          strides,
+          window_dilations,
+          padding
+        )
+    end
   end
 
   ## Cond
@@ -2430,7 +2502,7 @@ defmodule EXLA.Defn do
 
     {res, comp_cache} = fun.(function, Enum.with_index(params, fn x, idx -> {idx, x} end), cache)
 
-    {args, EXLA.Builder.build(res, true), comp_cache}
+    {args, EXLA.Builder.build(res), comp_cache}
   end
 
   defp if_branch_computation(subbuilder, _out_expr, args, cache, fun) do
@@ -2557,10 +2629,31 @@ defmodule EXLA.Defn do
     out_shape = EXLA.Shape.make_shape(out.type, out.shape)
     left_dims = broadcast_axes(left_shape.dims, out_shape.dims)
     right_dims = broadcast_axes(right_shape.dims, out_shape.dims)
-    type = out_shape.dtype
-    left = left |> to_type(type) |> Value.broadcast_in_dim(out_shape, left_dims)
-    right = right |> to_type(type) |> Value.broadcast_in_dim(out_shape, right_dims)
-    apply(Value, op, [left, right])
+
+    type = merge_type(left_shape.dtype, right_shape.dtype)
+
+    broadcast_shape = EXLA.Shape.make_shape(type, out_shape.dims)
+
+    left =
+      left
+      |> to_type(type)
+      |> Value.broadcast_in_dim(broadcast_shape, left_dims)
+
+    right =
+      right
+      |> to_type(type)
+      |> Value.broadcast_in_dim(broadcast_shape, right_dims)
+
+    {left, right} =
+      if not Nx.Type.float?(type) and Nx.Type.float?(out.type) do
+        {to_type(left, out.type), to_type(right, out.type)}
+      else
+        {left, right}
+      end
+
+    Value
+    |> apply(op, [left, right])
+    |> to_type(out.type)
   end
 
   defp collect_while_results(flat_list, expected_container) do

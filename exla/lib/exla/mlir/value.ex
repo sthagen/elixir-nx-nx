@@ -56,6 +56,10 @@ defmodule EXLA.MLIR.Value do
     %Value{op | ref: ref}
   end
 
+  def transpose(%Value{} = op, axes) when is_tuple(axes) do
+    transpose(op, Tuple.to_list(axes))
+  end
+
   def transpose(%Value{function: %Function{} = func} = op, axes) do
     ref = EXLA.NIF.mlir_transpose(func.ref, op.ref, axes) |> unwrap!()
     %Value{op | ref: ref}
@@ -111,21 +115,30 @@ defmodule EXLA.MLIR.Value do
     %Value{value | ref: out_ref}
   end
 
-  def sort(%Value{} = value, axis, direction, stable) do
-    [result] = sort([value], axis, direction, stable)
+  def top_k(%Value{function: %Function{ref: func_ref}, ref: op_ref} = val, k) do
+    [val_ref, idx_ref] = EXLA.NIF.mlir_top_k(func_ref, op_ref, k) |> unwrap!()
+    [%Value{val | ref: val_ref}, %Value{val | ref: idx_ref}]
+  end
+
+  def sort(%Value{} = value, comparator_fun, axis, stable) do
+    [result] = sort([value], comparator_fun, axis, stable)
     result
   end
 
-  def sort([%Value{function: %Function{ref: func_ref}} | _] = values, axis, direction, stable)
+  def sort(
+        [%Value{function: %Function{ref: func_ref}} | _] = values,
+        %Function{ref: comparator_fun},
+        axis,
+        stable
+      )
       when is_integer(axis) and is_boolean(stable) do
-    desc = if direction == :desc, do: 1, else: 0
     stable = if stable, do: 1, else: 0
 
     in_refs =
       Enum.map(values, fn %Value{ref: ref, function: %Function{ref: ^func_ref}} -> ref end)
 
     out_refs =
-      EXLA.NIF.mlir_sort(func_ref, in_refs, axis, desc, stable) |> unwrap!()
+      EXLA.NIF.mlir_sort(func_ref, in_refs, axis, comparator_fun, stable) |> unwrap!()
 
     Enum.zip_with(values, out_refs, fn value, out_ref -> %Value{value | ref: out_ref} end)
   end
@@ -353,11 +366,11 @@ defmodule EXLA.MLIR.Value do
   def gather(
         %Value{function: func} = source,
         %Value{function: func} = indices,
+        index_vector_dim,
         slice_sizes,
         offset_dims,
         collapsed_slice_dims,
-        start_index_map,
-        index_vector_dim
+        start_index_map
       ) do
     ref =
       EXLA.NIF.mlir_gather(

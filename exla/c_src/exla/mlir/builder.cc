@@ -32,6 +32,8 @@ mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, xla::PrimitiveType type_i
       return builder->getIntegerType(32);
     case PrimitiveType::S64:
       return builder->getIntegerType(64);
+    case PrimitiveType::PRED:
+      return builder->getIntegerType(1);
     case PrimitiveType::U8:
       return builder->getIntegerType(8, false);
     case PrimitiveType::U16:
@@ -52,6 +54,9 @@ mlir::Type TypeIntToMLIRType(mlir::OpBuilder *builder, xla::PrimitiveType type_i
       return mlir::ComplexType::get(builder->getF32Type());
     case PrimitiveType::C128:
       return mlir::ComplexType::get(builder->getF64Type());
+    default:
+      std::cerr << "Unknown type: " << type_int << std::endl;
+      exit(1);
   }
 }
 
@@ -297,8 +302,20 @@ mlir::Value MLIRFunction::PadOp(mlir::Value op, mlir::Value pad, std::vector<int
 }
 
 mlir::Value compare_and_return_bool(mlir::OpBuilder *builder, mlir::Value lhs, mlir::Value rhs, mlir::stablehlo::ComparisonDirection direction) {
-  auto op = builder->create<mlir::stablehlo::CompareOp>(builder->getUnknownLoc(), lhs, rhs, direction);
-  mlir::Type mlir_bool = builder->getIntegerType(8, false);
+  mlir::stablehlo::ComparisonType comparison_type_attr;
+  mlir::RankedTensorType ranked_type = llvm::cast<mlir::RankedTensorType>(lhs.getType());
+  mlir::Type left_type = mlir::RankedTensorType::get({}, ranked_type.getElementType());
+
+  ranked_type = llvm::cast<mlir::RankedTensorType>(rhs.getType());
+  mlir::Type right_type = mlir::RankedTensorType::get({}, ranked_type.getElementType());
+  if (left_type.isa<mlir::FloatType>() || right_type.isa<mlir::FloatType>()) {
+    comparison_type_attr = mlir::stablehlo::symbolizeComparisonType("TOTALORDER").value();
+  } else {
+    comparison_type_attr = mlir::stablehlo::ComparisonType::NOTYPE;
+  }
+
+  auto op = builder->create<mlir::stablehlo::CompareOp>(builder->getUnknownLoc(), lhs, rhs, direction, comparison_type_attr);
+  mlir::Type mlir_bool = builder->getIntegerType(1);
   return builder->create<mlir::stablehlo::ConvertOp>(builder->getUnknownLoc(), op, mlir_bool);
 }
 
@@ -434,31 +451,26 @@ mlir::Value MLIRFunction::TanOp(mlir::Value operand) {
 
 mlir::Value MLIRFunction::AcosOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AcosOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::AsinOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AsinOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::AtanOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AtanOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::CoshOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::CoshOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::SinhOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::SinhOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
@@ -469,19 +481,16 @@ mlir::Value MLIRFunction::TanhOp(mlir::Value operand) {
 
 mlir::Value MLIRFunction::AcoshOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AcoshOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::AsinhOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AsinhOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::AtanhOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::AtanhOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
@@ -500,23 +509,19 @@ mlir::Value MLIRFunction::NegateOp(mlir::Value operand) {
 }
 mlir::Value MLIRFunction::ErfOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::ErfOp>(module_->builder()->getUnknownLoc(), operand);
 }
 mlir::Value MLIRFunction::ErfInvOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::ErfInvOp>(module_->builder()->getUnknownLoc(), operand);
 }
 mlir::Value MLIRFunction::ErfcOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::ErfcOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
 mlir::Value MLIRFunction::IsInfOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   mlir::Value result;
 
   mlir::RankedTensorType type = llvm::cast<mlir::RankedTensorType>(operand.getType());
@@ -535,25 +540,42 @@ mlir::Value MLIRFunction::IsInfOp(mlir::Value operand) {
   } else {
     result = module_->builder()->create<mlir::chlo::IsInfOp>(module_->builder()->getUnknownLoc(), operand);
   }
-  mlir::Type mlir_bool = module_->builder()->getIntegerType(8, false);
+  mlir::Type mlir_bool = module_->builder()->getIntegerType(1);
   return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), result, mlir_bool);
 }
 
 mlir::Value MLIRFunction::IsNanOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   mlir::Type mlir_bool = module_->builder()->getI1Type();
 
-  mlir::Value is_finite_op = module_->builder()->create<mlir::stablehlo::IsFiniteOp>(module_->builder()->getUnknownLoc(), operand);
-  is_finite_op = module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_finite_op, mlir_bool);
+  mlir::RankedTensorType type = llvm::cast<mlir::RankedTensorType>(operand.getType());
+  mlir::Type element_type = type.getElementType();
 
-  mlir::Value is_inf_op = this->IsInfOp(operand);
-  is_inf_op = module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_inf_op, mlir_bool);
+  mlir::Value result;
 
-  mlir::Value is_nan_op = this->BitwiseAndOp(this->BitwiseNotOp(is_inf_op), this->BitwiseNotOp(is_finite_op));
-  mlir_bool = module_->builder()->getIntegerType(8, false);
+  if (element_type.isa<mlir::ComplexType>()) {
+    auto real_op = module_->builder()->create<mlir::stablehlo::RealOp>(module_->builder()->getUnknownLoc(), operand);
+    auto imag_op = module_->builder()->create<mlir::stablehlo::ImagOp>(module_->builder()->getUnknownLoc(), operand);
 
-  return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_nan_op, mlir_bool);
+    auto is_inf_real_op = this->ConvertOp(this->IsNanOp(real_op), element_type);
+    auto is_inf_imag_op = this->ConvertOp(this->IsNanOp(imag_op), element_type);
+    result = this->AddOp(is_inf_real_op, is_inf_imag_op);
+  } else if (element_type.isa<mlir::IntegerType>()) {
+    // integers are never nan
+    return this->NotEqualOp(operand, operand);
+  } else {
+    mlir::Value is_finite_op = module_->builder()->create<mlir::stablehlo::IsFiniteOp>(module_->builder()->getUnknownLoc(), operand);
+    is_finite_op = module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_finite_op, mlir_bool);
+
+    mlir::Value is_inf_op = this->IsInfOp(operand);
+    is_inf_op = module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_inf_op, mlir_bool);
+
+    result = this->BitwiseAndOp(this->BitwiseNotOp(is_inf_op), this->BitwiseNotOp(is_finite_op));
+  }
+
+  mlir_bool = module_->builder()->getIntegerType(1);
+
+  return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), result, mlir_bool);
 }
 mlir::Value MLIRFunction::RsqrtOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
@@ -572,7 +594,6 @@ mlir::Value MLIRFunction::ImagOp(mlir::Value operand) {
 
 mlir::Value MLIRFunction::ConjOp(mlir::Value operand) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  module_->context()->getOrLoadDialect<mlir::chlo::ChloDialect>();
   return module_->builder()->create<mlir::chlo::ConjOp>(module_->builder()->getUnknownLoc(), operand);
 }
 
@@ -624,33 +645,33 @@ static void buildSortComparisonBody(llvm::ArrayRef<mlir::Type> elementTypes,
   builder->create<mlir::stablehlo::ReturnOp>(loc, compare);
 }
 
-std::vector<mlir::Value> MLIRFunction::SortOp(std::vector<mlir::Value> operands, int64_t dim, bool desc, bool stable) {
-  module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-  std::vector<mlir::Type> element_types;
-  element_types.reserve(operands.size());
-  std::optional<mlir::StringRef> compare_type = std::nullopt;
-
-  for (auto element : operands) {
-    mlir::RankedTensorType ranked_type = llvm::cast<mlir::RankedTensorType>(element.getType());
-    mlir::Type type = mlir::RankedTensorType::get({}, ranked_type.getElementType());
-    element_types.push_back(type);
-    if (type.isa<mlir::FloatType>()) {
-      compare_type.emplace("TOTALORDER");
-    }
-  }
-
-  mlir::stablehlo::ComparisonDirection direction = desc ? mlir::stablehlo::ComparisonDirection::GT : mlir::stablehlo::ComparisonDirection::LT;
-
+std::vector<mlir::Value> MLIRFunction::TopKOp(mlir::Value operand, int64_t k) {
   mlir::OpBuilder *builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
 
+  mlir::chlo::TopKOp top_k_op = builder->create<mlir::chlo::TopKOp>(builder->getUnknownLoc(), operand, k);
+  mlir::Operation::result_range results = top_k_op.getResults();
+
+  auto results_vec = std::vector<mlir::Value>(results.begin(), results.end());
+
+  mlir::Value idx = builder->create<mlir::stablehlo::ConvertOp>(builder->getUnknownLoc(), results_vec[1], builder->getI64Type());
+  results_vec[1] = idx;
+  return results_vec;
+}
+
+std::vector<mlir::Value> MLIRFunction::SortOp(MLIRFunction *comparator, std::vector<mlir::Value> operands, int64_t dim, bool stable) {
+  mlir::OpBuilder *builder = module_->builder();
+  builder->setInsertionPointToEnd(&func_->getBody().back());
   mlir::ValueRange value_range(operands);
   mlir::stablehlo::SortOp sort_op = builder->create<mlir::stablehlo::SortOp>(
       builder->getUnknownLoc(),
       value_range,
       dim,
       stable);
-  buildSortComparisonBody(element_types, direction, compare_type,
-                          &sort_op.getComparator(), builder);
+
+  mlir::Region &compareBody = sort_op.getComparator();
+  mlir::Region &comparatorBody = comparator->function()->getBody();
+  compareBody.getBlocks().splice(compareBody.end(), comparatorBody.getBlocks());
 
   mlir::Operation::result_range results = sort_op.getResults();
   return std::vector<mlir::Value>(results.begin(), results.end());
@@ -1091,24 +1112,18 @@ ERL_NIF_TERM MLIRFunction::ConstantOp(mlir::Type type, ErlNifEnv *env, ERL_NIF_T
   return exla::nif::error(env, "invalid type received");
 }
 
-void MLIRFunction::Build(mlir::Value root, bool use_stablehlo_return) {
+void MLIRFunction::Build(mlir::Value root) {
   module_->builder()->setInsertionPointToEnd(&func_->getBody().back());
-
-  if (use_stablehlo_return) {
-    module_->builder()->create<mlir::stablehlo::ReturnOp>(module_->builder()->getUnknownLoc(), root);
-  } else {
-    module_->builder()->create<mlir::func::ReturnOp>(module_->builder()->getUnknownLoc(), root);
-  }
+  module_->builder()->create<mlir::stablehlo::ReturnOp>(module_->builder()->getUnknownLoc(), root);
 }
 
 MLIRModule::MLIRModule() {
   context_ = std::make_unique<mlir::MLIRContext>();
 
-  // TODO: Should we load all these up front, infer them, or make it
-  // manual?
   context_->loadDialect<mlir::func::FuncDialect>();
   context_->loadDialect<mlir::stablehlo::StablehloDialect>();
   context_->loadDialect<mlir::mhlo::MhloDialect>();
+  context_->loadDialect<mlir::chlo::ChloDialect>();
 
   module_ = mlir::OwningOpRef<mlir::ModuleOp>(mlir::ModuleOp::create(mlir::UnknownLoc::get(context_.get())));
   builder_ = std::make_unique<mlir::OpBuilder>(context_.get());
