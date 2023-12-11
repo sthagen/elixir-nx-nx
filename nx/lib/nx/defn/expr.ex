@@ -1211,12 +1211,6 @@ defmodule Nx.Defn.Expr do
   end
 
   @impl true
-  def cholesky(out, tensor) do
-    tensor = to_expr(tensor)
-    expr(out, tensor.data.context, :cholesky, [tensor])
-  end
-
-  @impl true
   def triangular_solve(out, a, b, opts) do
     {[a, b], context} = to_exprs([a, b])
     expr(out, context, :triangular_solve, [a, b, opts])
@@ -1228,14 +1222,6 @@ defmodule Nx.Defn.Expr do
     context = tensor.data.context
     out = %T{names: [], shape: {}, type: {:tuple, 3}}
     tuple(expr(out, context, :lu, [{p, l, u}, tensor, opts]), [p, l, u])
-  end
-
-  @impl true
-  def eigh({evals, evecs}, tensor, opts) do
-    tensor = to_expr(tensor)
-    context = tensor.data.context
-    out = %T{names: [], shape: {}, type: {:tuple, 2}}
-    tuple(expr(out, context, :eigh, [{evals, evecs}, tensor, opts]), [evals, evecs])
   end
 
   @impl true

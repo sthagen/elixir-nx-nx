@@ -532,7 +532,7 @@ defmodule EXLA.Defn do
           # We need to collect the returned values into the nested tuples
           # that should have come from the while expr
           [token | results] = mod.while(pred, body, initial)
-          result = collect_while_results(results, initial_arg)
+          result = collect_container_results(results, initial_arg)
           {token, result}
 
         _ ->
@@ -548,7 +548,7 @@ defmodule EXLA.Defn do
   defp cached_recur_operator(:cond, %T{data: %Expr{args: args}} = t, state, cache) do
     [clauses, last] = args
 
-    {cond, cache} =
+    {cond_op, cache} =
       case clauses do
         [{pred, on_true}] ->
           to_if(pred, on_true, last, state, cache)
@@ -567,11 +567,18 @@ defmodule EXLA.Defn do
           to_if(pred, on_true, on_false, state, cache)
       end
 
-    if get_token(cache) do
-      token = EXLA.Op.get_tuple_element(cond, 0)
-      {EXLA.Op.get_tuple_element(cond, 1), update_token(cache, token)}
-    else
-      {cond, cache}
+    case state.builder do
+      %Function{} ->
+        # TO-DO(mlir): deal with token
+        {cond_op, cache}
+
+      _ ->
+        if get_token(cache) do
+          token = EXLA.Op.get_tuple_element(cond_op, 0)
+          {EXLA.Op.get_tuple_element(cond_op, 1), update_token(cache, token)}
+        else
+          {cond_op, cache}
+        end
     end
   end
 
@@ -802,9 +809,20 @@ defmodule EXLA.Defn do
   ## to_operator others
 
   defp to_operator(:metadata, [op, _metadata], _ans, state) do
+    %builder_mod{} = state.builder
+
     case op do
-      %EXLA.Op{} -> op
-      _ -> EXLA.Op.tuple(state.builder, Tuple.to_list(op))
+      %Value{} ->
+        op
+
+      %EXLA.Op{} ->
+        op
+
+      op when is_tuple(op) and builder_mod == EXLA.Builder ->
+        EXLA.Op.tuple(state.builder, Tuple.to_list(op))
+
+      op when is_tuple(op) ->
+        Value.tuple(Tuple.to_list(op))
     end
   end
 
@@ -1000,18 +1018,6 @@ defmodule EXLA.Defn do
 
   defp to_operator(:lu, [{_, _, _}, _tensor, _opts], _ans, _state) do
     raise ArgumentError, "XLA does not currently support the LU operation"
-  end
-
-  defp to_operator(:eigh, [{%{type: type}, %{type: type}}, tensor, opts], _ans, state) do
-    {eigvec, eigval} =
-      EXLA.Op.eigh(
-        to_type(tensor, type),
-        1,
-        Keyword.fetch!(opts, :eps),
-        Keyword.fetch!(opts, :max_iter)
-      )
-
-    EXLA.Op.tuple(state.builder, [eigval, eigvec])
   end
 
   ## to_operator element-wise
@@ -1667,22 +1673,6 @@ defmodule EXLA.Defn do
     EXLA.Op.concatenate(tensors, axis)
   end
 
-  defp to_operator(:cholesky, [tensor], ans, state) do
-    tensor = to_type(tensor, ans.type)
-    cholesky = EXLA.Op.cholesky(tensor)
-
-    zeros =
-      state.builder
-      |> to_constant(0.0, ans.type)
-      |> EXLA.Op.broadcast_in_dim(ans.shape, broadcast_axes({}, ans.shape))
-
-    iota_shape = EXLA.Shape.make_shape({:s, 64}, ans.shape)
-    iota_one = EXLA.Op.iota(state.builder, iota_shape, 1)
-    iota_zero = EXLA.Op.iota(state.builder, iota_shape, 0)
-
-    EXLA.Op.select(EXLA.Op.less_equal(iota_one, iota_zero), cholesky, zeros)
-  end
-
   defp to_operator(:sort, [%mod{} = tensor, opts], ans, state) do
     dimension = opts[:axis]
 
@@ -1940,6 +1930,7 @@ defmodule EXLA.Defn do
 
         op == :greater ->
           is_nan = EXLA.Op.is_nan(arg1, type, {}, subbuilder)
+
           EXLA.Op.bitwise_or(is_nan, EXLA.Op.greater(arg1, arg2))
       end
 
@@ -2114,7 +2105,7 @@ defmodule EXLA.Defn do
         [{"p0", token_shape} | arg_shapes],
         {struct(Nx.Tensor, %{type: :token}), expr},
         :mlir,
-        false
+        true
       )
 
     [arg_token | _] = args = EXLA.MLIR.Function.get_arguments(function)
@@ -2400,18 +2391,17 @@ defmodule EXLA.Defn do
 
     case builder do
       %EXLA.MLIR.Function{} ->
-        [if_op] =
+        if_results =
           Value.if(
             pred_op,
-            [EXLA.Builder.exla_shape(on_true)],
+            List.wrap(EXLA.Builder.exla_shape(on_true, true)),
             true_args,
             true_comp,
             false_args,
             false_comp
           )
 
-        # TO-DO(mlir): this tuple should probably be the outfeed tuple
-        {Value.tuple([if_op, if_op]), cache}
+        {collect_container_results(if_results, on_true), cache}
 
       _ ->
         {EXLA.Op.conditional(pred_op, true_args, true_comp, false_args, false_comp), cache}
@@ -2432,10 +2422,7 @@ defmodule EXLA.Defn do
 
   defp collect_args(%T{data: %Expr{id: id, op: op, args: args}} = expr, {cache, ids}, shared_ids) do
     cond do
-      op == :constant ->
-        {expr, {cache, ids}}
-
-      collect_arg?(id, op, args, shared_ids) ->
+      op == :constant or collect_arg?(id, op, args, shared_ids) ->
         case ids do
           %{^id => {_, _, new}} ->
             {new, {cache, ids}}
@@ -2507,13 +2494,23 @@ defmodule EXLA.Defn do
 
     # input function is actually the parent function still, so we need to actually create a new function
     # with this name on the same module.
-    function = EXLA.Builder.new({module, name}, inputs, out_expr, :mlir, true)
+    function = EXLA.Builder.new({module, name}, inputs, out_expr, :mlir, false, true)
+
+    case function.return_shape do
+      [%{dtype: {:tuple, _}}] ->
+        raise "MLIR cannot return tuple from if branch"
+
+      _ ->
+        nil
+    end
 
     params = EXLA.MLIR.Function.get_arguments(function)
 
     {res, comp_cache} = fun.(function, Enum.with_index(params, fn x, idx -> {idx, x} end), cache)
 
-    {args, EXLA.Builder.build(res), comp_cache}
+    [res | _] = Value.variadic_return([res], true)
+
+    {args, res.function, comp_cache}
   end
 
   defp if_branch_computation(subbuilder, _out_expr, args, cache, fun) do
@@ -2667,18 +2664,22 @@ defmodule EXLA.Defn do
     |> to_type(out.type)
   end
 
-  defp collect_while_results(flat_list, expected_container) do
-    {collected, []} = collect_while_results_unflatten(flat_list, expected_container)
+  defp collect_container_results(flat_list, expected_container) do
+    {collected, []} = collect_container_results_unflatten(flat_list, expected_container)
     collected
   end
 
-  defp collect_while_results_unflatten(list, tuple) when is_list(list) and is_tuple(tuple) do
+  defp collect_container_results_unflatten(list, tuple) when is_list(list) and is_tuple(tuple) do
     {elements, list} = Enum.split(list, tuple_size(tuple))
-    {unnested, list} = Enum.map_reduce(elements, list, &collect_while_results_unflatten/2)
+    {unnested, list} = Enum.map_reduce(elements, list, &collect_container_results_unflatten/2)
     {Value.tuple(unnested), list}
   end
 
-  defp collect_while_results_unflatten(%Value{} = value, _) do
+  defp collect_container_results_unflatten([%Value{} = value], _) do
+    {value, []}
+  end
+
+  defp collect_container_results_unflatten(%Value{} = value, _) do
     {value, []}
   end
 
