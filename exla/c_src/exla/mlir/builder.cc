@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "../exla_nif_util.h"
+#include "custom_calls.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mhlo/transforms/rewriters.h"
 #include "mhlo/utils/type_conversion.h"
@@ -17,6 +18,7 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/primitive_util.h"
+#include "xla/service/custom_call_target_registry.h"
 #include "xla/types.h"
 
 namespace exla {
@@ -307,21 +309,26 @@ mlir::Value MLIRFunction::PadOp(mlir::Value op, mlir::Value pad, std::vector<int
 }
 
 mlir::Value compare_and_return_bool(mlir::OpBuilder *builder, mlir::Value lhs, mlir::Value rhs, mlir::stablehlo::ComparisonDirection direction) {
-  mlir::stablehlo::ComparisonType comparison_type_attr;
+  mlir::stablehlo::ComparisonType comparison_type;
   mlir::RankedTensorType ranked_type = llvm::cast<mlir::RankedTensorType>(lhs.getType());
   mlir::Type left_type = mlir::RankedTensorType::get({}, ranked_type.getElementType());
 
   ranked_type = llvm::cast<mlir::RankedTensorType>(rhs.getType());
   mlir::Type right_type = mlir::RankedTensorType::get({}, ranked_type.getElementType());
   if (left_type.isa<mlir::FloatType>() || right_type.isa<mlir::FloatType>()) {
-    comparison_type_attr = mlir::stablehlo::symbolizeComparisonType("TOTALORDER").value();
+    comparison_type = mlir::stablehlo::symbolizeComparisonType("TOTALORDER").value();
   } else {
-    comparison_type_attr = mlir::stablehlo::ComparisonType::NOTYPE;
+    comparison_type = mlir::stablehlo::ComparisonType::NOTYPE;
   }
 
-  auto op = builder->create<mlir::stablehlo::CompareOp>(builder->getUnknownLoc(), lhs, rhs, direction, comparison_type_attr);
+  auto direction_attr = mlir::stablehlo::ComparisonDirectionAttr::get(builder->getContext(), direction);
+  auto comparison_type_attr = mlir::stablehlo::ComparisonTypeAttr::get(builder->getContext(), comparison_type);
   mlir::Type mlir_bool = builder->getIntegerType(1);
-  return builder->create<mlir::stablehlo::ConvertOp>(builder->getUnknownLoc(), op, mlir_bool);
+  auto shape = llvm::cast<mlir::RankedTensorType>(lhs.getType()).getShape();
+
+  mlir::Type out_type = mlir::RankedTensorType::get(shape, builder->getIntegerType(1));
+  auto op = builder->create<mlir::stablehlo::CompareOp>(builder->getUnknownLoc(), out_type, lhs, rhs, direction_attr, comparison_type_attr);
+  return op;
 }
 
 mlir::Value MLIRFunction::EqualOp(mlir::Value lhs, mlir::Value rhs) {
@@ -565,6 +572,7 @@ mlir::Value MLIRFunction::IsNanOp(mlir::Value operand) {
     auto is_inf_real_op = this->ConvertOp(this->IsNanOp(real_op), element_type);
     auto is_inf_imag_op = this->ConvertOp(this->IsNanOp(imag_op), element_type);
     result = this->AddOp(is_inf_real_op, is_inf_imag_op);
+    return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), result, mlir_bool);
   } else if (element_type.isa<mlir::IntegerType>()) {
     // integers are never nan
     return this->NotEqualOp(operand, operand);
@@ -575,12 +583,8 @@ mlir::Value MLIRFunction::IsNanOp(mlir::Value operand) {
     mlir::Value is_inf_op = this->IsInfOp(operand);
     is_inf_op = module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), is_inf_op, mlir_bool);
 
-    result = this->BitwiseAndOp(this->BitwiseNotOp(is_inf_op), this->BitwiseNotOp(is_finite_op));
+    return this->BitwiseAndOp(this->BitwiseNotOp(is_inf_op), this->BitwiseNotOp(is_finite_op));
   }
-
-  mlir_bool = module_->builder()->getIntegerType(1);
-
-  return module_->builder()->create<mlir::stablehlo::ConvertOp>(module_->builder()->getUnknownLoc(), result, mlir_bool);
 }
 mlir::Value MLIRFunction::RsqrtOp(mlir::Value operand) {
   setInsertionPoint();
@@ -930,7 +934,11 @@ std::pair<std::vector<mlir::Value>, std::pair<mlir::Region *, mlir::Region *>> M
     output_types.push_back(type);
   }
 
-  pred = builder->create<mlir::stablehlo::ConvertOp>(builder->getUnknownLoc(), pred, builder->getIntegerType(1));
+  mlir::Type pred_type = llvm::cast<mlir::RankedTensorType>(pred.getType()).getElementType();
+  if (!pred_type.isInteger(1)) {
+    pred = builder->create<mlir::stablehlo::ConvertOp>(builder->getUnknownLoc(), pred, builder->getIntegerType(1));
+  }
+
   mlir::stablehlo::IfOp if_op = builder->create<mlir::stablehlo::IfOp>(builder->getUnknownLoc(), mlir::TypeRange(output_types), pred);
 
   mlir::Operation::result_range result_range = if_op.getResults();
@@ -1400,4 +1408,59 @@ void MLIRFunction::setInsertionPoint() {
     module_->builder()->setInsertionPointToEnd(&regions.top()->back());
   }
 }
+
+std::pair<mlir::Value, mlir::Value> MLIRFunction::QRCpuCustomCall(mlir::Value operand, std::vector<int64_t> q_shape, std::vector<int64_t> r_shape) {
+  auto builder = module_->builder();
+  setInsertionPoint();
+
+  mlir::RankedTensorType op_type = llvm::cast<mlir::RankedTensorType>(operand.getType());
+
+  auto op_shape = op_type.getShape();
+
+  mlir::Value dim_sizes = builder->create<mlir::stablehlo::ConstantOp>(builder->getUnknownLoc(), Int64ToDenseIntElementsAttr(builder, std::vector<int64_t>({static_cast<int64_t>(op_shape.size()), static_cast<int64_t>(q_shape.size()), static_cast<int64_t>(r_shape.size())})));
+  mlir::Value operand_dims = builder->create<mlir::stablehlo::ConstantOp>(builder->getUnknownLoc(), Int64ToDenseIntElementsAttr(builder, op_shape));
+  mlir::Value q_dims = builder->create<mlir::stablehlo::ConstantOp>(builder->getUnknownLoc(), Int64ToDenseIntElementsAttr(builder, q_shape));
+  mlir::Value r_dims = builder->create<mlir::stablehlo::ConstantOp>(builder->getUnknownLoc(), Int64ToDenseIntElementsAttr(builder, r_shape));
+
+  auto element_type = op_type.getElementType();
+  std::string call_target_name = "qr_cpu_custom_call_f32";
+
+  if (element_type.isF32()) {
+    XLA_CPU_REGISTER_CUSTOM_CALL_TARGET_WITH_SYM(call_target_name, qr_cpu_custom_call_f32);
+  } else if (element_type.isF64()) {
+    call_target_name = "qr_cpu_custom_call_f64";
+    XLA_CPU_REGISTER_CUSTOM_CALL_TARGET_WITH_SYM(call_target_name, qr_cpu_custom_call_f64);
+  } else if (element_type.isF16()) {
+    call_target_name = "qr_cpu_custom_call_f16";
+    XLA_CPU_REGISTER_CUSTOM_CALL_TARGET_WITH_SYM(call_target_name, qr_cpu_custom_call_f16);
+  } else if (element_type.isBF16()) {
+    call_target_name = "qr_cpu_custom_call_bf16";
+    XLA_CPU_REGISTER_CUSTOM_CALL_TARGET_WITH_SYM(call_target_name, qr_cpu_custom_call_bf16);
+  } else {
+    std::cerr << "Unsupported type for QR decomposition" << std::endl;
+    exit(1);
+  }
+
+  auto call_target_name_attr = mlir::NamedAttribute(builder->getStringAttr("call_target_name"), builder->getStringAttr(call_target_name));
+  auto backend_config_attr = mlir::NamedAttribute(builder->getStringAttr("backend_config"), builder->getStringAttr("Host"));
+  auto named_attrs = {call_target_name_attr, backend_config_attr};
+
+  mlir::Type q_type = mlir::RankedTensorType::get(q_shape, op_type.getElementType());
+  mlir::Type r_type = mlir::RankedTensorType::get(r_shape, op_type.getElementType());
+
+  mlir::TupleType out_tuple_type = mlir::TupleType::get(builder->getContext(), mlir::TypeRange({q_type, r_type}));
+
+  auto custom_call = builder->create<mlir::stablehlo::CustomCallOp>(
+      builder->getUnknownLoc(),
+      mlir::TypeRange({out_tuple_type}),
+      mlir::ValueRange({operand, dim_sizes, operand_dims, q_dims, r_dims}),
+      llvm::ArrayRef<mlir::NamedAttribute>(named_attrs));
+
+  mlir::Value out_tuple = custom_call.getResult(0);
+  mlir::Value q = this->GetTupleElementOp(out_tuple, 0);
+  mlir::Value r = this->GetTupleElementOp(out_tuple, 1);
+
+  return std::make_pair(q, r);
+}
+
 }  // namespace exla
