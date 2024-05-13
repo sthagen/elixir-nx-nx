@@ -1940,43 +1940,6 @@ defmodule Nx.BinaryBackend do
   end
 
   @impl true
-  def take_along_axis(
-        %T{type: output_type} = output,
-        %T{shape: t_shape, type: {_, t_size} = t_type} = tensor,
-        %T{shape: idx_shape, type: {_, idx_size} = idx_type} = indices,
-        axis
-      ) do
-    permutation =
-      tensor
-      |> Nx.axes()
-      |> List.delete(axis)
-      |> List.insert_at(Nx.rank(tensor) - 1, axis)
-
-    inverse_permutation = inverse_permutation(permutation)
-    shape_list = Tuple.to_list(output.shape)
-    permuted_shape = permutation |> Enum.map(&Enum.at(shape_list, &1)) |> List.to_tuple()
-
-    t_view = tensor |> to_binary() |> aggregate_axes([axis], t_shape, t_size)
-    idx_view = indices |> to_binary() |> aggregate_axes([axis], idx_shape, idx_size)
-
-    [t_view, idx_view]
-    |> Enum.zip_with(fn [data_bin, idx_bin] ->
-      data = binary_to_list(data_bin, t_type)
-
-      binary_to_binary(idx_bin, idx_type, output_type, fn idx ->
-        if idx < 0 or idx >= elem(tensor.shape, axis) do
-          raise ArgumentError,
-                "index #{idx} is out of bounds for axis #{axis} in shape #{inspect(tensor.shape)}"
-        end
-
-        Enum.at(data, idx)
-      end)
-    end)
-    |> then(&from_binary(%{output | shape: permuted_shape}, &1))
-    |> then(&transpose(output, &1, inverse_permutation))
-  end
-
-  @impl true
   def gather(out, tensor, indices, opts) do
     axes = opts[:axes]
     tensor_axes = Nx.axes(tensor)
@@ -2034,6 +1997,19 @@ defmodule Nx.BinaryBackend do
       )
 
     offset
+  end
+
+  @impl true
+  def stack(out, tensors, axis) do
+    %{shape: output_shape, type: {_, size} = output_type} = out
+
+    tensors
+    |> Enum.map(fn %{shape: shape} = t ->
+      t = as_type(%{t | type: output_type}, t)
+      {to_binary(t), Tuple.insert_at(shape, axis, 1)}
+    end)
+    |> bin_concatenate(size, axis, output_shape)
+    |> then(&from_binary(out, &1))
   end
 
   @impl true

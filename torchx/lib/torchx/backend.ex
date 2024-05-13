@@ -338,6 +338,16 @@ defmodule Torchx.Backend do
   end
 
   @impl true
+  def stack(out, tensors, axis) do
+    reshape = put_elem(out.shape, axis, 1)
+
+    tensors
+    |> Enum.map(&(&1 |> from_nx() |> Torchx.reshape(reshape)))
+    |> Torchx.concatenate(axis)
+    |> to_nx(out)
+  end
+
+  @impl true
   def gather(out, tensor, indices, opts) do
     tensor_axes = Nx.axes(tensor)
     axes = opts[:axes]
@@ -425,12 +435,12 @@ defmodule Torchx.Backend do
   end
 
   @impl true
-  def take_along_axis(out, tensor, idx, axis) do
+  def take_along_axis(out, tensor, idx, opts) do
     idx_tx = idx |> from_nx() |> Torchx.to_type(:long)
 
     tensor
     |> from_nx()
-    |> Torchx.gather(idx_tx, axis)
+    |> Torchx.gather(idx_tx, opts[:axis])
     |> to_nx(out)
   end
 
