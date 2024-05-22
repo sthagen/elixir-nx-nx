@@ -98,6 +98,9 @@ defmodule EXLA.MLIR.Module do
         do: -1,
         else: Keyword.get(options, :device_id, client.default_device_id)
 
+    # Uncomment to debug the module MLIR source
+    # module |> as_string() |> IO.puts()
+
     ref =
       EXLA.NIF.mlir_compile(
         client.ref,
@@ -124,7 +127,7 @@ defmodule EXLA.MLIR.Module do
   Returns a human-readable representation of the module using MLIR
   syntax.
   """
-  def to_string(module = %__MODULE__{}) do
+  def as_string(module = %__MODULE__{}) do
     EXLA.NIF.mlir_module_to_string(module.ref) |> unwrap!()
   end
 
