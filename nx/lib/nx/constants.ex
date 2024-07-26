@@ -97,7 +97,7 @@ defmodule Nx.Constants do
   end
 
   @doc """
-  Returns infinity in f32.
+  Returns negative infinity in f32.
   """
   def neg_infinity, do: neg_infinity({:f, 32}, [])
 
@@ -158,7 +158,7 @@ defmodule Nx.Constants do
       iex> Nx.Constants.max_finite({:s, 16})
       #Nx.Tensor<
         s16
-        32677
+        32767
       >
 
       iex> Nx.Constants.max_finite({:f, 32})
@@ -220,7 +220,7 @@ defmodule Nx.Constants do
       iex> Nx.Constants.min_finite({:s, 16})
       #Nx.Tensor<
         s16
-        -32678
+        -32768
       >
 
       iex> Nx.Constants.min_finite({:f, 32})
@@ -265,7 +265,7 @@ defmodule Nx.Constants do
   end
 
   @doc """
-  Returns the imaginary constant in c64
+  Returns the imaginary constant in c64.
   """
   def i, do: i(:c64)
 
