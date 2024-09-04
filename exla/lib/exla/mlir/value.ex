@@ -720,14 +720,14 @@ defmodule EXLA.MLIR.Value do
     eigenvecs_dims = Tuple.to_list(eigenvecs_shape)
     eigenvals_dims = Tuple.to_list(eigenvals_shape)
 
-    dim_sizes = constant(func, dim_sizes, Typespec.tensor({:s, 64}, {length(dim_sizes)}))
-    operand_dims = constant(func, operand_dims, Typespec.tensor({:s, 64}, {length(operand_dims)}))
+    dim_sizes = constant(func, dim_sizes, Typespec.tensor({:u, 64}, {length(dim_sizes)}))
+    operand_dims = constant(func, operand_dims, Typespec.tensor({:u, 64}, {length(operand_dims)}))
 
     eigenvecs_dims =
-      constant(func, eigenvecs_dims, Typespec.tensor({:s, 64}, {length(eigenvecs_dims)}))
+      constant(func, eigenvecs_dims, Typespec.tensor({:u, 64}, {length(eigenvecs_dims)}))
 
     eigenvals_dims =
-      constant(func, eigenvals_dims, Typespec.tensor({:s, 64}, {length(eigenvals_dims)}))
+      constant(func, eigenvals_dims, Typespec.tensor({:u, 64}, {length(eigenvals_dims)}))
 
     operands = [value, dim_sizes, operand_dims, eigenvecs_dims, eigenvals_dims]
 
@@ -772,10 +772,10 @@ defmodule EXLA.MLIR.Value do
     q_dims = Tuple.to_list(q_shape)
     r_dims = Tuple.to_list(r_shape)
 
-    dim_sizes = constant(func, dim_sizes, Typespec.tensor({:s, 64}, {length(dim_sizes)}))
-    operand_dims = constant(func, operand_dims, Typespec.tensor({:s, 64}, {length(operand_dims)}))
-    q_dims = constant(func, q_dims, Typespec.tensor({:s, 64}, {length(q_dims)}))
-    r_dims = constant(func, r_dims, Typespec.tensor({:s, 64}, {length(r_dims)}))
+    dim_sizes = constant(func, dim_sizes, Typespec.tensor({:u, 64}, {length(dim_sizes)}))
+    operand_dims = constant(func, operand_dims, Typespec.tensor({:u, 64}, {length(operand_dims)}))
+    q_dims = constant(func, q_dims, Typespec.tensor({:u, 64}, {length(q_dims)}))
+    r_dims = constant(func, r_dims, Typespec.tensor({:u, 64}, {length(r_dims)}))
     operands = [value, dim_sizes, operand_dims, q_dims, r_dims]
 
     q_result_type = type_tensor(q_type, q_shape)
@@ -880,6 +880,7 @@ defmodule EXLA.MLIR.Value do
   defp type_number({:pred, 8}), do: "i1"
   defp type_number({:s, width}), do: "i#{width}"
   defp type_number({:u, width}), do: "ui#{width}"
+  defp type_number({:f, 8}), do: "f8E5M2"
   defp type_number({:f, width}), do: "f#{width}"
   defp type_number({:bf, width}), do: "bf#{width}"
   defp type_number({:c, 64}), do: "complex<f32>"
@@ -926,10 +927,15 @@ defmodule EXLA.MLIR.Value do
         :nan -> type |> Nx.Type.nan_binary() |> native_to_big()
         :infinity -> type |> Nx.Type.infinity_binary() |> native_to_big()
         :neg_infinity -> type |> Nx.Type.neg_infinity_binary() |> native_to_big()
+        value when size == 8 -> f8E5M2_to_big(value)
         value -> <<value::float-size(size)-big>>
       end
 
     Base.encode16(data)
+  end
+
+  defp f8E5M2_to_big(x) do
+    binary_part(<<x::float-big-16>>, 0, 1)
   end
 
   defp native_to_big(binary) do
