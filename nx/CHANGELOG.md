@@ -1,11 +1,16 @@
 # Changelog
 
+## v0.9.1 (2024-10-08)
+
+### Deprecations
+
+  * [Nx] Deprecate `Nx.Defn.stream`
+
 ## v0.9.0 (2024-09-26)
 
 ### Enhancements
 
   * [Nx] Add 8-bit Floating Point numerical type
-  * [Nx] Added `s4` and `s2` quantized integer types
   * [Nx] Add quantized int types (s2, s4, u2, u4)
 
 ### Bug fixes
