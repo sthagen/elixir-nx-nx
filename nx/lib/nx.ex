@@ -2196,6 +2196,102 @@ defmodule Nx do
     list
   end
 
+  @doc """
+  Invokes an Elixir function from within `defn`.
+
+  This function allows integrating arbitrary Elixir code into `defn` graphs.
+  It receives an output template (a tensor or a tuple of tensors) that
+  specifies the expected shapes, types, and names of the result, a tensor
+  or tensor container argument, and an optional static argument, and the function
+  itself.
+
+  The `static_argument` will be passed through the Elixir processes to the callback function
+  along with the executable Nx code.
+
+  Tensors passed to the callback function are in the same backend as the inputs in the case
+  of `Nx.Defn.Evaluator` invocations. For other compilers, it is generally expected that
+  the tensors will be provided as `Nx.BinaryBackend` tensors.
+
+  > #### Device locks {: .warning}
+  >
+  > `runtime_call/4` will generally operate on tensors allocated on a given physical device, such as a GPU.
+  > For example, EXLA will have one or more CPU clients.
+  >
+  > When calling other Nx computations from within the callback, these other computations cannot operate
+  > on the same device as this will result in a deadlock.
+
+  > #### Backend transfers {: .warning}
+  >
+  > When executing a `runtime_call/4` in `Nx.Defn.Evaluator`, the tensors should not be transferred with `Nx.backend_transfer/2`,
+  > because the values passed might still be used in the rest of the computation. If needed, you can use `Nx.backend_copy/2` to another backend instead.
+
+  ## Examples
+
+  While most code inside `defn` is restricted, `runtime_call/4` allows you
+  to perform arbitrary Elixir operations, such as message passing:
+
+      iex> pid = self()
+      iex> x = Nx.tensor([1, 2, 3])
+      iex> out = Nx.template({3}, {:s, 32})
+      iex> _ =
+      ...>   Nx.runtime_call(out, x, fn t ->
+      ...>     send(pid, {:sum, Enum.sum(Nx.to_flat_list(t))})
+      ...>     t
+      ...>   end)
+      iex> receive do {:sum, value} -> value end
+      6
+
+  You can also use the `static_argument` to pass non-tensor metadata to
+  your callback while still validating the tensor result against a template:
+
+      iex> pid = self()
+      iex> x = Nx.tensor([1, 2, 3])
+      iex> y = Nx.tensor([4, 5, 6])
+      iex> out = %{x: x, y: y}
+      iex> _ =
+      ...>   Nx.runtime_call(out, {x, y}, [pid: pid], fn {a, b}, opts ->
+      ...>     send(opts[:pid], {:dot, Nx.to_number(Nx.dot(a, b))})
+      ...>     %{x: a, y: b}
+      ...>   end)
+      iex> receive do {:dot, value} -> value end
+      32
+
+  Inside `defn`, this builds an expression node understood by compilers.
+  Outside `defn` or on backends without special support, it executes `fun`
+  directly and validates the result matches the template.
+  """
+  @doc type: :backend
+  def runtime_call(output, tensor_or_container, fun) when is_function(fun, 1) do
+    runtime_call(output, tensor_or_container, [], fn value, _opts -> fun.(value) end)
+  end
+
+  def runtime_call(output, tensor_or_container, static_argument, fun)
+      when is_function(fun, 2) do
+    # Outside defn, we execute the callback directly or via the backend if it
+    # provides a specialized implementation. We resolve the backend from all
+    # tensors inside the container to support tuple/map containers.
+    tensors = Nx.Defn.Composite.flatten_list([tensor_or_container])
+    backend = Nx.Shared.list_impl!(tensors)
+
+    result =
+      if backend == Nx.Defn.Expr do
+        backend.runtime_call(output, tensor_or_container, static_argument, fun)
+      else
+        fun.(tensor_or_container, static_argument)
+      end
+
+    ensure_call_compatible!(result, output)
+  end
+
+  defp ensure_call_compatible!(left, right) do
+    if Nx.compatible?(left, right) do
+      left
+    else
+      raise ArgumentError,
+            "expected the runtime_call function to match the given output template #{inspect(right)}, got: #{inspect(left)}"
+    end
+  end
+
   defp chunk([], data, type) do
     match_types [type] do
       <<match!(head, 0), tail::binary>> = data
