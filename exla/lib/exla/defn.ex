@@ -768,7 +768,7 @@ defmodule EXLA.Defn do
 
   defp cached_recur_operator(
          :runtime_call,
-         %T{data: %Expr{id: id, args: [tensor_expr, opts, fun, out_template]}} = expr,
+         %T{data: %Expr{id: id, args: [tensor_expr, fun, out_template]}} = expr,
          %{client: %EXLA.Client{platform: :host}, callback_server_pid: callback_server_pid} =
            state,
          cache
@@ -788,7 +788,7 @@ defmodule EXLA.Defn do
     arg_template = Nx.to_template(tensor_expr)
 
     :ok =
-      EXLA.CallbackServer.register(callback_server_pid, id, fun, out_template, arg_template, opts)
+      EXLA.CallbackServer.register(callback_server_pid, id, fun, out_template, arg_template)
 
     typespecs = container_to_typespecs(out_template)
 
@@ -1472,27 +1472,6 @@ defmodule EXLA.Defn do
     comp = sort_computation(op, type, arg_typespecs, state)
 
     EXLA.Lib.argsort(state.builder, tensor, dimension, stable, comp, ans.type)
-  end
-
-  ## to_operator collective ops
-
-  defp to_operator(:all_gather, [%Value{} = tensor, opts], ans, _state) do
-    all_gather_dim = Keyword.fetch!(opts, :all_gather_dim)
-    replica_groups = Keyword.fetch!(opts, :replica_groups)
-    use_global_device_ids = Keyword.get(opts, :use_global_device_ids, false)
-
-    # We might want to surface all_gather as an operation that takes a container of operands instead of a single one.
-    [result] =
-      Value.all_gather(
-        [tensor],
-        expr_to_typespec(ans),
-        all_gather_dim,
-        replica_groups,
-        use_global_device_ids,
-        opts[:channel_id]
-      )
-
-    result
   end
 
   defp fft(exla_op, [%Value{} = tensor, opts], %{type: type} = ans, state) do

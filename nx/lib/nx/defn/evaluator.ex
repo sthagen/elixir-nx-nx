@@ -55,6 +55,11 @@ defmodule Nx.Defn.Evaluator do
     end
   end
 
+  @impl true
+  def __shard_jit__(_key, _mesh, _vars, _fun, _args_list, _opts) do
+    raise "sharding is not supported by Nx.Defn.Evaluator"
+  end
+
   defp apply_output({result, _cache}, output) do
     {result, []} =
       Composite.traverse(result, output, fn result, [out | acc] ->
@@ -380,9 +385,9 @@ defmodule Nx.Defn.Evaluator do
     end
   end
 
-  defp eval_apply(:runtime_call, [expr, static, fun, out_template], _ans, state, caches) do
+  defp eval_apply(:runtime_call, [expr, fun, out_template], _ans, state, caches) do
     {tensor_value, caches} = composite_eval(expr, state, caches)
-    result = fun.(tensor_value, static)
+    result = fun.(tensor_value)
 
     if not Nx.compatible?(out_template, result) do
       raise "expected the runtime_call function to match the given output template"
