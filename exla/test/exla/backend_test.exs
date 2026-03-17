@@ -5,6 +5,7 @@ defmodule EXLA.BackendTest do
 
   setup do
     Nx.default_backend(EXLA.Backend)
+    Nx.Defn.default_options(compiler: EXLA, precision: :default)
     :ok
   end
 
