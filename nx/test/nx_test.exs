@@ -1059,6 +1059,24 @@ defmodule NxTest do
                ])
     end
 
+    test "computes window scatter max with f64" do
+      t = Nx.iota({6}, type: :f64)
+      s = Nx.iota({3}, type: :f64)
+      init = Nx.tensor(0.0, type: :f64)
+      result = Nx.window_scatter_max(t, s, init, {2}, strides: [2], padding: :valid)
+      assert Nx.type(result) == {:f, 64}
+      assert Nx.shape(result) == {6}
+    end
+
+    test "computes window scatter min with f64" do
+      t = Nx.iota({6}, type: :f64)
+      s = Nx.iota({3}, type: :f64)
+      init = Nx.tensor(0.0, type: :f64)
+      result = Nx.window_scatter_min(t, s, init, {2}, strides: [2], padding: :valid)
+      assert Nx.type(result) == {:f, 64}
+      assert Nx.shape(result) == {6}
+    end
+
     test "computes window reduce (sum of squares) with same padding" do
       t = Nx.iota({4, 4}, type: {:f, 32})
 
@@ -3077,6 +3095,14 @@ defmodule NxTest do
       expected_linear = Nx.tensor([0.0, 0.1, 0.2, 0.3, 0.4, 0.5], type: :f64)
       assert_all_close(linear, expected_linear, atol: 1.0e-15, rtol: 1.0e-15)
     end
+
+    test "n=1 returns start value" do
+      assert Nx.linspace(0, 10, n: 1) == Nx.tensor([0.0])
+    end
+
+    test "n=1 with same start/stop" do
+      assert Nx.linspace(5, 5, n: 1) == Nx.tensor([5.0])
+    end
   end
 
   describe "reflect/2" do
@@ -3578,6 +3604,20 @@ defmodule NxTest do
       tensor = Nx.u4([0, 1, 2, 3, 13, 14, 15])
       assert 3 = Nx.byte_size(tensor)
       assert 28 = Nx.bit_size(tensor)
+    end
+  end
+
+  describe "slice of scalar tensor" do
+    test "returns scalar" do
+      t = Nx.tensor(42)
+      result = Nx.slice(t, [], [])
+      assert Nx.to_number(result) == 42
+    end
+
+    test "slice of scalar f64 tensor" do
+      t = Nx.tensor(3.14, type: :f64)
+      result = Nx.slice(t, [], [])
+      assert_in_delta Nx.to_number(result), 3.14, 1.0e-10
     end
   end
 end
