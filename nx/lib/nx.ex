@@ -8935,7 +8935,7 @@ defmodule Nx do
     else
       out = %{a | names: [], shape: {}, type: {:u, 8}}
 
-      block(struct(Nx.Block.AllClose, opts), [a, b], out, fn %Nx.Block.AllClose{} = o, a, b ->
+      block(struct!(Nx.Block.AllClose, opts), [a, b], out, fn %Nx.Block.AllClose{} = o, a, b ->
         vectorized_all_close(a, b,
           equal_nan: o.equal_nan,
           rtol: o.rtol,
@@ -14327,19 +14327,18 @@ defmodule Nx do
       indices = devectorize(indices, keep_names: false)
       out = %{tensor | shape: inner_shape, names: inner_names}
 
-      block(struct(Nx.Block.Take, axis: axis), [tensor, indices], out, fn %Nx.Block.Take{},
-                                                                          tensor,
-                                                                          indices ->
-        gather_indices = new_axis(indices, rank(indices))
-        {indices_axes, tensor_axes} = Enum.split(axes(inner_shape), rank(indices))
-        {leading, trailing} = Enum.split(tensor_axes, axis)
+      block(struct!(Nx.Block.Take, axis: axis), [tensor, indices], out, fn
+        %Nx.Block.Take{}, tensor, indices ->
+          gather_indices = new_axis(indices, rank(indices))
+          {indices_axes, tensor_axes} = Enum.split(axes(inner_shape), rank(indices))
+          {leading, trailing} = Enum.split(tensor_axes, axis)
 
-        transpose_axes = leading ++ indices_axes ++ trailing
+          transpose_axes = leading ++ indices_axes ++ trailing
 
-        tensor
-        |> gather(gather_indices, axes: [axis])
-        |> transpose(axes: transpose_axes)
-        |> rename(inner_names)
+          tensor
+          |> gather(gather_indices, axes: [axis])
+          |> transpose(axes: transpose_axes)
+          |> rename(inner_names)
       end)
     end
   end
@@ -14509,7 +14508,7 @@ defmodule Nx do
 
     result =
       block(
-        struct(Nx.Block.TakeAlongAxis, axis: axis),
+        struct!(Nx.Block.TakeAlongAxis, axis: axis),
         [tensor, indices],
         out,
         fn %Nx.Block.TakeAlongAxis{}, tensor, indices ->
@@ -15327,7 +15326,7 @@ defmodule Nx do
       out_indices = %{tensor | shape: output_shape, names: output_names, type: {:s, 32}}
 
       block(
-        struct(Nx.Block.TopK, k: opts[:k]),
+        struct!(Nx.Block.TopK, k: opts[:k]),
         [tensor],
         {out_values, out_indices},
         fn %Nx.Block.TopK{} = top_k, tensor ->
@@ -16774,9 +16773,9 @@ defmodule Nx do
 
       block_struct =
         if kind == :fft2 do
-          struct(Nx.Block.FFT2, eps: opts[:eps], lengths: [l1, l2], axes: [ax1, ax2])
+          struct!(Nx.Block.FFT2, eps: opts[:eps], lengths: [l1, l2], axes: [ax1, ax2])
         else
-          struct(Nx.Block.IFFT2, eps: opts[:eps], lengths: [l1, l2], axes: [ax1, ax2])
+          struct!(Nx.Block.IFFT2, eps: opts[:eps], lengths: [l1, l2], axes: [ax1, ax2])
         end
 
       block(block_struct, [tensor], out, fn s, tensor ->
