@@ -366,7 +366,7 @@ defmodule Nx.Defn.Evaluator do
   end
 
   defp eval_apply(:block, [struct, in_args, expr, expr_cache], ans, state, caches) do
-    {in_args, caches} = Tree.map_block_args(in_args, caches, &eval(&1, state, &2))
+    {in_args, caches} = Enum.map_reduce(in_args, caches, &eval(&1, state, &2))
     {param_prefix, _} = Enum.split_while(in_args, &(not is_list(&1)))
     backend = Nx.Shared.list_impl!(param_prefix)
 

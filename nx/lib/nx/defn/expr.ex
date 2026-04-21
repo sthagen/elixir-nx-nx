@@ -808,7 +808,7 @@ defmodule Nx.Defn.Expr do
   @behaviour Nx.Backend
 
   @impl true
-  def block(struct, _output, in_args, fun) do
+  def block(struct, _output \\ nil, in_args, fun) do
     expr_block(struct, in_args, fun)
   end
 
