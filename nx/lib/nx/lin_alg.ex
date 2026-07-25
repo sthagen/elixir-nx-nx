@@ -328,7 +328,7 @@ defmodule Nx.LinAlg do
   defp norm_frobenius(%{shape: {_, _}} = t, opts), do: norm_integer(t, 2, opts)
 
   defp norm_nuclear(%{shape: {_, _}} = t) do
-    {_u, s, _v} = svd(t)
+    {_u, s, _v} = svd(t, full_matrices?: false)
     Nx.sum(s)
   end
 
@@ -373,7 +373,7 @@ defmodule Nx.LinAlg do
   end
 
   defp norm_integer(%{shape: {_, _}} = t, -2, opts) do
-    {_u, s, _v} = Nx.LinAlg.svd(t)
+    {_u, s, _v} = svd(t, full_matrices?: false)
     Nx.reduce_min(s, opts)
   end
 
@@ -583,7 +583,6 @@ defmodule Nx.LinAlg do
       iex> a = Nx.tensor([[1, 0, 0], [1, 1, 0], [1, 1, 1]], type: :f64)
       iex> Nx.LinAlg.triangular_solve(a, Nx.tensor([1, 2, 1]), transform_a: :other)
       ** (ArgumentError) invalid value for :transform_a option, expected :none, :transpose, or :conjugate, got: :other
-
   """
   def triangular_solve(a, b, opts \\ []) do
     opts = keyword!(opts, lower: true, left_side: true, transform_a: :none)
@@ -866,8 +865,20 @@ defmodule Nx.LinAlg do
     custom_grad(ans, [tensor], fn g ->
       # As defined in https://juliadiff.org/ChainRulesCore.jl/stable/maths/arrays.html#Matrix-inversion-2
       ans_h = adjoint(ans)
-      [ans_h |> Nx.negate() |> Nx.dot(g) |> Nx.dot(ans_h)]
+      batch_axes = batch_axes(ans_h)
+
+      [
+        ans_h
+        |> Nx.negate()
+        |> Nx.dot([-1], batch_axes, g, [-2], batch_axes)
+        |> Nx.dot([-1], batch_axes, ans_h, [-2], batch_axes)
+      ]
     end)
+  end
+
+  deftransformp batch_axes(t) do
+    rank = tuple_size(t.shape)
+    Enum.to_list(0..(rank - 3)//1)
   end
 
   defnp invert_tensor(tensor) do
@@ -1051,7 +1062,7 @@ defmodule Nx.LinAlg do
         [
           [3.0, 2.0, 1.0],
           [0.0, 1.0, 1.0],
-          [0.0, 0.0, 1.4142137]
+          [0.0, 0.0, 1.4142135]
         ]
       >
 
@@ -1984,7 +1995,6 @@ defmodule Nx.LinAlg do
         c64
         -0.0-6.0i
       >
-
   """
   # IMPORTANT: This function cannot be a defn because
   # optional needs to work on the actual backend.
@@ -2172,7 +2182,7 @@ defmodule Nx.LinAlg do
     max_dim = if row_dim > col_dim, do: row_dim, else: col_dim
 
     # Calculate max singular value
-    {_u, s, _v} = Nx.LinAlg.svd(a)
+    {_u, s, _v} = Nx.LinAlg.svd(a, full_matrices?: false)
 
     s_max = Nx.reduce_max(s)
 

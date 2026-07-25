@@ -157,6 +157,15 @@ defmodule Torchx do
   PyTorch implements a variety of devices, which can be seen below.
 
   #{@valid_devices_md_list}
+
+  ## Backend documentation
+
+  Backend-specific behaviour, options, and limitations for Nx linear algebra are
+  documented in [Nx.LinAlg](backend_documentation-nx_lin_alg.html). Top-level
+  `Nx` blocks and transfers are documented in
+  [Nx](backend_documentation-nx.html). See the
+  [backend documentation convention](https://hexdocs.pm/nx/backend_documentation-convention.html)
+  in the Nx package.
   """
   use Torchx.Macro
   alias Torchx.NIF
@@ -229,6 +238,7 @@ defmodule Torchx do
   def eye(size, type, device), do: eye(size, size, type, device)
   defdevice eye(m, n, type, device)
   defdevice from_blob(blob, shape, type, device)
+  defdevice from_pointer(mode, handle, shape, type, device)
 
   @torch_function {:to_device, 2}
   def to_device(tensor, device) do
@@ -402,6 +412,12 @@ defmodule Torchx do
   def scalar_type({dev, ref}) when is_tensor(dev, ref), do: NIF.scalar_type(ref) |> unwrap!()
   def shape({dev, ref}) when is_tensor(dev, ref), do: NIF.shape(ref) |> unwrap!()
   def nbytes({dev, ref}) when is_tensor(dev, ref), do: NIF.nbytes(ref) |> unwrap!()
+
+  @doc false
+  def to_pointer({dev, ref}, mode, permissions)
+      when is_tensor(dev, ref) and is_atom(mode) and is_integer(permissions) do
+    NIF.to_pointer(ref, mode, permissions) |> unwrap!()
+  end
 
   ## Nx
 

@@ -39,6 +39,12 @@ defmodule Nx do
 
     * `Nx.Constants` declares many constants commonly used in numerical code
 
+  Backend-specific notes for extensible operations (`Nx.block/4`, transfers, and
+  related APIs) are documented in the [backend documentation convention](backend_documentation-convention.html)
+  guide and in each backend's **Backend documentation** pages on HexDocs when a
+  backend has divergent behaviour or backend-specific option.
+
+
   Continue reading this documentation for an overview of creating,
   broadcasting, and accessing/slicing Nx tensors.
 
@@ -2221,6 +2227,71 @@ defmodule Nx do
   end
 
   @doc """
+  Invokes a side-effect callback from within `defn`, passing data through unchanged.
+
+  Unlike `runtime_call/4`, `io_call/2` does not compute a new value in the callback.
+  Its purpose is to execute side effects (logging, sending messages, etc.) and
+  returns the original data unchanged:
+
+      x = Nx.io_call(x, &MyMod.log/1)
+
+  Named `io_call`s can be overridden at JIT time via the `:hooks` option, which
+  maps each name to a side-effect callback:
+
+      Nx.Defn.jit(fun, hooks: %{my_io_call: &MyMod.log/1})
+
+  ## Examples
+
+      iex> defmodule IoCallExample do
+      ...>   def log(t), do: t
+      ...> end
+      iex> x = Nx.tensor([1, 2, 3])
+      iex> x = Nx.io_call(x, &IoCallExample.log/1)
+      iex> inspect(x)
+      "#Nx.Tensor<\\n  s32[3]\\n  [1, 2, 3]\\n>"
+
+  """
+  @doc type: :backend
+  def io_call(tensor_or_container, callback) when is_function(callback, 1) do
+    io_call_impl(tensor_or_container, {:fn, callback})
+  end
+
+  @doc type: :backend
+  def io_call(tensor_or_container, name) when is_atom(name) do
+    io_call_impl(tensor_or_container, {:named, name, nil})
+  end
+
+  @doc type: :backend
+  def io_call(tensor_or_container, name, callback)
+      when is_atom(name) and (is_function(callback, 1) or is_nil(callback)) do
+    io_call_impl(tensor_or_container, {:named, name, callback})
+  end
+
+  defp io_call_impl(tensor_or_container, callback_spec) do
+    tensors = Nx.Defn.Composite.flatten_list([tensor_or_container])
+    backend = Nx.Shared.list_impl!(tensors)
+
+    if backend == Nx.Defn.Expr do
+      Nx.Defn.Expr.io_call(tensor_or_container, callback_spec)
+    else
+      run_io_call_eager!(callback_spec, tensor_or_container)
+      tensor_or_container
+    end
+  end
+
+  defp run_io_call_eager!({:fn, fun}, container) when is_function(fun, 1), do: fun.(container)
+
+  defp run_io_call_eager!({:named, name, _}, _container) do
+    raise ArgumentError,
+          "named io_call #{inspect(name)} is only supported inside defn; pass a function callback instead"
+  end
+
+  defp run_io_call_eager!(_spec, _container) do
+    raise ArgumentError,
+          "io_call is only supported inside defn; pass a function callback instead"
+  end
+
+  @doc """
   Invokes an Elixir function from within `defn`.
 
   This function allows integrating arbitrary Elixir code into `defn` graphs.
@@ -2515,6 +2586,7 @@ defmodule Nx do
         s32
         [3, 1]
       >
+
   """
   @doc type: :conversion
   def to_batched(tensor, batch_size, opts \\ [])
@@ -4979,7 +5051,6 @@ defmodule Nx do
           [4, 5, 6]
         ]
       >
-
   """
   @doc type: :backend
   def backend_copy(tensor_or_container, backend \\ Nx.BinaryBackend) do
@@ -5029,7 +5100,6 @@ defmodule Nx do
   Transfer the device tensor back to an Elixir tensor:
 
       tensor = Nx.backend_transfer(device_tensor)
-
   """
   @doc type: :backend
   def backend_transfer(tensor_or_container, backend \\ Nx.BinaryBackend) do
@@ -5049,6 +5119,7 @@ defmodule Nx do
   It returns either `:ok` or `:already_deallocated`.
 
   Note: This function cannot be used in `defn`.
+
   """
   @doc type: :backend
   def backend_deallocate(tensor_or_container) do
@@ -7223,6 +7294,7 @@ defmodule Nx do
         [0, 1, 0]
       >
 
+
   """
   @doc type: :element
   def logical_not(tensor) do
@@ -9276,6 +9348,7 @@ defmodule Nx do
           [0, 0]
         ]
       >
+
   """
   @doc type: :aggregation
   def all_close(a, b, opts \\ []) do
@@ -11680,6 +11753,7 @@ defmodule Nx do
           [2, 3, 6]
         ]
       >
+
   """
   @doc type: :cumulative
   def cumulative_sum(tensor, opts \\ []),
@@ -11756,6 +11830,7 @@ defmodule Nx do
           [2, 2, 6]
         ]
       >
+
   """
   @doc type: :cumulative
   def cumulative_product(tensor, opts \\ []),
@@ -11832,6 +11907,7 @@ defmodule Nx do
           [2, 1, 1]
         ]
       >
+
   """
   @doc type: :cumulative
   def cumulative_min(tensor, opts \\ []),
@@ -11908,6 +11984,7 @@ defmodule Nx do
           [2, 2, 3]
         ]
       >
+
   """
   @doc type: :cumulative
   def cumulative_max(tensor, opts \\ []),
@@ -15666,6 +15743,7 @@ defmodule Nx do
       iex> a = Nx.tensor(1)
       iex> Nx.top_k(a, k: 1)
       ** (ArgumentError) top_k input must have at least rank 1
+
 
   """
   @doc type: :ndim
