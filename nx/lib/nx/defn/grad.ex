@@ -401,6 +401,7 @@ defmodule Nx.Defn.Grad do
 
           _ ->
             g = gs |> Tuple.to_list() |> Enum.map(&sum_grad/1)
+            g = broadcast_tuple_grads(op, args, g)
             {nodes, update_grads(op, args, ans, g, to_grad_ids, grads)}
         end
 
@@ -619,6 +620,26 @@ defmodule Nx.Defn.Grad do
       Map.update(grads, child.data.id, [g], &[g | &1])
     end)
   end
+
+  # Unused tuple outputs get a rank-0 zero from `sum_grad([])`. Broadcast
+  # each slot onto the primal leaf, as `update_grads(:while, ...)` does.
+  defp broadcast_tuple_grads(op, args, gs) do
+    case tuple_primal(op, args) do
+      nil ->
+        gs
+
+      primal ->
+        Enum.zip_with(gs, Composite.flatten_list([primal]), fn g, out ->
+          Nx.broadcast(g, Nx.devectorize(out, keep_names: false))
+        end)
+    end
+  end
+
+  defp tuple_primal(:block, [_, _, expr | _]), do: expr
+  defp tuple_primal(:metadata, [expr | _]), do: expr
+  defp tuple_primal(:cond, [_, last]), do: last
+  defp tuple_primal(:io_call, [tensor_expr | _]), do: tensor_expr
+  defp tuple_primal(_, _), do: nil
 
   defp select_composite(pred, left, right) do
     {selected, []} =
@@ -1677,8 +1698,9 @@ defmodule Nx.Defn.Grad do
   defp unbroadcast(%{shape: shape} = x, res, %{shape: shape}, _batch_count), do: {x, res}
 
   defp unbroadcast(x, res, %{shape: new_shape}, batch_count) do
-    # Preserve batch dims when x doesn't already have them:
-    # x has fewer dims than batch_count, or its leading dims are all 1.
+    # Preserve batch dims when x doesn't already have them: fewer dims than
+    # batch_count, or leading 1s that expand against a larger batch. Leading 1s
+    # that already match the result are a real size-1 vec prefix — leave them.
     batch_offset =
       cond do
         batch_count == 0 ->
@@ -1687,7 +1709,11 @@ defmodule Nx.Defn.Grad do
         tuple_size(x.shape) < batch_count ->
           batch_count
 
-        Enum.all?(0..(batch_count - 1)//1, &(elem(x.shape, &1) == 1)) ->
+        tuple_size(new_shape) >= batch_count and
+            Enum.all?(
+              0..(batch_count - 1)//1,
+              &(elem(x.shape, &1) == 1 and elem(new_shape, &1) > 1)
+            ) ->
           batch_count
 
         true ->
