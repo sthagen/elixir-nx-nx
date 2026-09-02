@@ -587,6 +587,33 @@ defmodule Nx.LinAlgTest do
   end
 
   describe "eigh" do
+    test "supports batched 1x1 matrices" do
+      t = Nx.tensor([[[2.0]], [[5.0]]], type: :f64)
+
+      {eigenvals, eigenvecs} = Nx.LinAlg.eigh(t)
+
+      assert eigenvals == Nx.tensor([[2.0], [5.0]], type: :f64)
+      assert eigenvecs == Nx.tensor([[[1.0]], [[1.0]]], type: :f64)
+
+      # double batch
+      t2 = Nx.iota({3, 2, 1, 1}, type: :f64) |> Nx.add(1.0)
+      {vals2, vecs2} = Nx.LinAlg.eigh(t2)
+      assert Nx.shape(vals2) == {3, 2, 1}
+      assert Nx.shape(vecs2) == {3, 2, 1, 1}
+      assert_all_close(vals2, Nx.reshape(t2, {3, 2, 1}))
+    end
+
+    test "batched size-1 dimensions work through svd and pinv" do
+      {_u, s, _vt} = Nx.LinAlg.svd(Nx.tensor([[[3.0, 4.0]], [[6.0, 8.0]]], type: :f64))
+      assert_all_close(s, Nx.tensor([[5.0], [10.0]], type: :f64))
+
+      {_u2, s2, _vt2} = Nx.LinAlg.svd(Nx.tensor([[[3.0], [4.0]], [[6.0], [8.0]]], type: :f64))
+      assert_all_close(s2, Nx.tensor([[5.0], [10.0]], type: :f64))
+
+      pinv = Nx.LinAlg.pinv(Nx.tensor([[[2.0]], [[4.0]]], type: :f64))
+      assert_all_close(pinv, Nx.tensor([[[0.5]], [[0.25]]], type: :f64))
+    end
+
     test "computes eigenvalues and eigenvectors" do
       t =
         Nx.tensor([
@@ -1050,6 +1077,55 @@ defmodule Nx.LinAlgTest do
           assert_all_close(pinv, Nx.transpose(vt) |> Nx.dot(s_inv) |> Nx.dot(Nx.transpose(u)),
             atol: 1.0e-2
           )
+
+          key
+      end
+    end
+
+    test "supports batched input" do
+      key = Nx.Random.key(42)
+
+      for shape <- [{2, 3, 3}, {2, 3, 4}, {2, 4, 3}, {2, 2, 3, 3}], reduce: key do
+        key ->
+          {t, key} = Nx.Random.uniform(key, -1, 1, shape: shape, type: :f64)
+
+          pinv = Nx.LinAlg.pinv(t)
+
+          rank = tuple_size(shape)
+          {rows, cols} = {elem(shape, rank - 2), elem(shape, rank - 1)}
+
+          expected_shape =
+            shape |> Tuple.delete_at(rank - 1) |> Tuple.delete_at(rank - 2)
+
+          assert Nx.shape(pinv) ==
+                   expected_shape
+                   |> Tuple.insert_at(rank - 2, cols)
+                   |> Tuple.insert_at(rank - 1, rows)
+
+          # batched result equals the stacked per-matrix results
+          batch_dims = shape |> Tuple.to_list() |> Enum.take(rank - 2)
+          flat = Nx.reshape(t, {Enum.product(batch_dims), rows, cols})
+
+          per_matrix =
+            for i <- 0..(Enum.product(batch_dims) - 1) do
+              Nx.LinAlg.pinv(flat[i])
+            end
+
+          assert_all_close(
+            Nx.reshape(pinv, {Enum.product(batch_dims), cols, rows}),
+            Nx.stack(per_matrix),
+            atol: 1.0e-6
+          )
+
+          # Moore-Penrose: A P A = A, per batch
+          batch_axes = Enum.to_list(0..(rank - 3))
+
+          apa =
+            t
+            |> Nx.dot([rank - 1], batch_axes, pinv, [rank - 2], batch_axes)
+            |> Nx.dot([rank - 1], batch_axes, t, [rank - 2], batch_axes)
+
+          assert_all_close(apa, t, atol: 1.0e-3)
 
           key
       end

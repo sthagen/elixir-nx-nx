@@ -1041,6 +1041,10 @@ defmodule Nx do
   compile time; invoking the compiled function then requires matching
   `donatable?` marks on the live arguments (mismatches raise).
 
+  The mark applies to the argument only. Whatever a function returns belongs
+  to its caller, who has not asked to donate it, so results are never
+  donatable, not even when the result is a donated argument returned as is.
+
   ## Examples
 
       iex> t = Nx.donatable(Nx.tensor([1, 2, 3]))
@@ -1050,6 +1054,10 @@ defmodule Nx do
       iex> %{a: a, b: b} = Nx.donatable(%{a: Nx.tensor(1), b: Nx.tensor(2)})
       iex> {Nx.donatable?(a), Nx.donatable?(b)}
       {true, true}
+
+      iex> fun = Nx.Defn.jit(&Nx.add(&1, 1))
+      iex> Nx.donatable?(fun.(Nx.donatable(Nx.tensor([1, 2, 3]))))
+      false
 
   """
   @doc type: :conversion
@@ -2012,7 +2020,6 @@ defmodule Nx do
   Creates a one-dimensional tensor from a `binary` with the given `type`.
 
   If the binary size does not match its type, an error is raised.
-
   ## Examples
 
       iex> Nx.from_binary(<<1, 2, 3, 4>>, :s8)
@@ -2041,7 +2048,7 @@ defmodule Nx do
       is ignored inside `defn`
   """
   @doc type: :creation
-  def from_binary(binary, type, opts \\ []) when is_binary(binary) do
+  def from_binary(binary, type, opts \\ []) when is_bitstring(binary) do
     opts = keyword!(opts, [:backend])
     {_, size} = type = Nx.Type.normalize!(type)
     dim = div(Kernel.bit_size(binary), size)
@@ -12472,7 +12479,7 @@ defmodule Nx do
         tensor
       else
         out = %{tensor | type: type, shape: shape, names: names}
-        impl!(tensor).reduce(out, tensor, acc, [axes: axes, keep_axes: keep_axes], fun)
+        impl!(tensor, acc).reduce(out, tensor, acc, [axes: axes, keep_axes: keep_axes], fun)
       end
 
     vectorize(output, vectorized_axes)
@@ -12609,7 +12616,7 @@ defmodule Nx do
 
       out = %{tensor | shape: output_shape}
       opts = [padding: padding_config, strides: strides, window_dilations: dilations]
-      impl!(tensor).window_reduce(out, tensor, acc, window_dimensions, opts, fun)
+      impl!(tensor, acc).window_reduce(out, tensor, acc, window_dimensions, opts, fun)
     end)
   end
 
@@ -13987,7 +13994,7 @@ defmodule Nx do
 
       Nx.Shared.raise_complex_not_supported(output_type, :clip, 2)
 
-      impl!(tensor).clip(%{tensor | type: output_type}, tensor, min, max)
+      impl!(tensor, min, max).clip(%{tensor | type: output_type}, tensor, min, max)
     end)
   end
 
@@ -14513,7 +14520,7 @@ defmodule Nx do
     output_names = List.duplicate(nil, offset) ++ output_names
 
     result =
-      impl!(tensor).put_slice(
+      impl!(tensor, slice).put_slice(
         %{tensor | shape: output_shape_devec, names: output_names, type: output_type},
         tensor,
         start_indices,
@@ -15191,7 +15198,7 @@ defmodule Nx do
 
     {shape, names} = Nx.Shape.gather(tensor.shape, indices.shape, axes)
     out = %{tensor | shape: shape, names: names}
-    result = impl!(tensor).gather(out, tensor, indices, axes: axes)
+    result = impl!(tensor, indices).gather(out, tensor, indices, axes: axes)
     vectorize(result, vectorized_axes)
   end
 

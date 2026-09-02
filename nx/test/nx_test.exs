@@ -623,6 +623,22 @@ defmodule NxTest do
   end
 
   describe "inspect" do
+    test "sub-byte integer tensors" do
+      assert inspect(Nx.tensor([1, 2, 3], type: {:u, 2})) == """
+             #Nx.Tensor<
+               u2[3]
+               [1, 2, 3]
+             >\
+             """
+
+      assert inspect(Nx.tensor([-1, 0, 1], type: {:s, 2})) == """
+             #Nx.Tensor<
+               s2[3]
+               [-1, 0, 1]
+             >\
+             """
+    end
+
     test "scalar" do
       assert inspect(Nx.tensor(123)) == """
              #Nx.Tensor<
@@ -1411,6 +1427,12 @@ defmodule NxTest do
       assert Nx.reshape(t, {2, 2}, names: [:x, :y]) ==
                Nx.tensor([[1, 2], [3, 4]], names: [:x, :y])
     end
+
+    test "raises ArgumentError for more than one :auto dimension" do
+      assert_raise ArgumentError,
+                   "only a single :auto dimension is allowed in reshape, got: {:auto, :auto}",
+                   fn -> Nx.reshape(Nx.iota({12}), {:auto, :auto}) end
+    end
   end
 
   describe "flatten" do
@@ -1488,6 +1510,20 @@ defmodule NxTest do
       assert_raise(ArgumentError, "cannot build an empty tensor", fn ->
         Nx.from_binary("", {:u, 32})
       end)
+    end
+
+    test "round-trips sub-byte tensors whose binary is not byte-aligned" do
+      for {type, values} <- [
+            {{:u, 2}, [1, 2, 3]},
+            {{:u, 4}, [5, 10, 15]},
+            {{:s, 2}, [-1, 0, 1]}
+          ] do
+        tensor = Nx.tensor(values, type: type)
+        data = Nx.to_binary(tensor)
+
+        refute is_binary(data)
+        assert Nx.from_binary(data, type) == tensor
+      end
     end
   end
 
