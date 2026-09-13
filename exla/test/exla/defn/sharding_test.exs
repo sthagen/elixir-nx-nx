@@ -392,6 +392,41 @@ defmodule EXLA.Defn.ShardingTest do
     end
   end
 
+  describe "input buffers already on an EXLA device" do
+    @moduletag :multi_device
+    test "does not crash with 'No matching device found for device_id -1'" do
+      previous_backend = Nx.default_backend()
+      Nx.default_backend({EXLA.Backend, client: :host})
+
+      try do
+        fun = fn a, b -> Nx.dot(a, b) end
+
+        mesh = %Mesh{name: "two_host_devices", shape: {2}}
+
+        sharded_matmul =
+          EXLA.shard_jit(
+            fun,
+            mesh,
+            client: :host,
+            input_shardings: [%{0 => [0]}, %{}]
+          )
+
+        a0 = Nx.broadcast(Nx.tensor(1.0, type: {:f, 32}), {2, 4})
+        a1 = Nx.broadcast(Nx.tensor(2.0, type: {:f, 32}), {2, 4})
+        b = Nx.eye(4, type: {:f, 32})
+
+        [result0, result1] = sharded_matmul.([[a0, b], [a1, b]])
+
+        assert_equal(result0, a0)
+        assert result0.data.buffer.device_id == 0
+        assert_equal(result1, a1)
+        assert result1.data.buffer.device_id == 1
+      after
+        Nx.default_backend(previous_backend)
+      end
+    end
+  end
+
   describe "mesh validation" do
     test "raises when input_shardings provided without mesh" do
       fun = fn x -> Nx.add(x, 1) end
@@ -700,6 +735,50 @@ defmodule EXLA.Defn.ShardingTest do
 
       assert_equal(result3, Nx.tensor([[14, 18, 22]]))
       assert result3.data.buffer.device_id == 3
+    end
+  end
+
+  describe "container arguments" do
+    @moduletag :multi_device
+    test "applies one sharding spec to every leaf of a container argument" do
+      # fun receives a plain map container as its first argument (like an
+      # Axon.ModelState or any other struct/map implementing Nx.Container),
+      # instead of a bare Nx.Tensor.
+      fun = fn container, tensor -> Nx.add(Map.fetch!(container, :value), tensor) end
+
+      mesh = %Mesh{name: "two_devices", shape: {2}}
+
+      # A single "%{}" sharding spec applies to every leaf inside the
+      # container (here: just `value`, replicated on every device), while the
+      # plain tensor argument keeps its own sharding spec.
+      input_shardings = [%{}, %{0 => [0]}]
+
+      container = %{value: Nx.tensor([1])}
+
+      args = [
+        [container, Nx.tensor([1, 2])],
+        [container, Nx.tensor([3, 4])]
+      ]
+
+      [result0, result1] =
+        EXLA.shard_jit(fun, mesh, client: :host, input_shardings: input_shardings).(args)
+
+      assert_equal(result0, Nx.tensor([2, 3]))
+      assert_equal(result1, Nx.tensor([4, 5]))
+    end
+
+    test "raises a clear error, not a KeyError, for an invalid sharding on a container leaf" do
+      fun = fn container, tensor -> Nx.add(container.value, tensor) end
+
+      mesh = %Mesh{name: "mesh", shape: {2}}
+      # Axis 1 does not exist on this mesh.
+      input_shardings = [%{0 => [1]}, %{}]
+
+      args = List.duplicate([%{value: Nx.tensor([1, 2])}, Nx.tensor([3, 4])], 2)
+
+      assert_raise ArgumentError, ~r/axis 1 is not valid for mesh/, fn ->
+        EXLA.shard_jit(fun, mesh, client: :host, input_shardings: input_shardings).(args)
+      end
     end
   end
 

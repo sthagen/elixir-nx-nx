@@ -1205,9 +1205,29 @@ defmodule Nx.DefnTest do
       end
     end
 
-    test "raises lazily" do
+    test "does not evaluate the other boolean branch" do
       assert if_boolean_raise(boolean: true) == Expr.tensor(1)
+    end
+
+    test "raises when the boolean else branch is taken" do
       assert_raise ArgumentError, "oops", fn -> if_boolean_raise(boolean: false) end
+    end
+
+    defn if_rank_raise(t) do
+      if Nx.rank(t) != 2 do
+        raise ArgumentError, "tensor must have rank 2"
+      end
+
+      {r, c} = Nx.shape(t)
+      r + c
+    end
+
+    test "aborts tracing when a known if predicate raises" do
+      assert_raise ArgumentError, "tensor must have rank 2", fn ->
+        if_rank_raise(Nx.tensor([1, 2, 3]))
+      end
+
+      assert if_rank_raise(Nx.tensor([[1, 2], [3, 4]])) == Expr.tensor(4)
     end
 
     test "raises correct error on incompatible shapes" do
@@ -1403,21 +1423,19 @@ defmodule Nx.DefnTest do
                  Nx.Defn.Expr
                  parameter a:0                           s32
                  parameter c:1                           s32[2][1][2]
-                 parameter h:2                           s32
-                 parameter l:3                           s32[1][2]
+                 parameter g:2                           s32
+                 parameter k:3                           s32[1][2]
                  b = greater a, 0                        u8
-                 d = reshape 1                           s32[1][1][1]
-                 e = add c, d                            s32[2][1][2]
-                 f = broadcast e, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
-                 g = less a, 0                           u8
-                 i = subtract h, 1                       s32
-                 j = reshape i                           s32[1][1][1]
-                 k = broadcast j, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
-                 m = reshape 2                           s32[1][1]
-                 n = multiply l, m                       s32[1][2]
-                 o = reshape n                           s32[1][2][1]
-                 p = broadcast o, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
-                 q = cond b -> f, g -> k, true -> p      s32[2][2][2]
+                 d = add 1, c                            s32[2][1][2]
+                 e = broadcast d, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
+                 f = less a, 0                           u8
+                 h = subtract g, 1                       s32
+                 i = reshape h                           s32[1][1][1]
+                 j = broadcast i, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
+                 l = multiply 2, k                       s32[1][2]
+                 m = reshape l                           s32[1][2][1]
+                 n = broadcast m, {2, 2, 2}, [0, 1, 2]   s32[2][2][2]
+                 o = cond b -> e, f -> j, true -> n      s32[2][2][2]
                >
                """)
 

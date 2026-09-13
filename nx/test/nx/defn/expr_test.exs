@@ -221,6 +221,73 @@ defmodule Nx.Defn.ExprTest do
       assert %T{type: {:c, 128}, data: %Expr{op: :multiply, args: [^c_c128, ^t_f64]}} =
                Nx.multiply(t_f64, c_c64)
     end
+
+    test "reshaping a float constant keeps it a constant" do
+      c_f32 = Expr.constant(Nx.tensor(0.7, type: :f32), 0.7, [])
+      t_f64 = Nx.tensor([2, 2], type: :f64) |> Expr.tensor()
+      pred = Nx.tensor([1, 0], type: :u8) |> Expr.tensor()
+
+      assert %T{shape: {1}, data: %Expr{op: :constant, args: [0.7]}} = Nx.reshape(c_f32, {1})
+
+      # vectorized operands reach an op through a reshape, so a literal only
+      # stays a constant if the reshape keeps it one
+      assert %T{data: %Expr{op: :select, args: [_, on_true, _]}} =
+               Nx.select(Nx.vectorize(pred, :a), c_f32, Nx.vectorize(t_f64, :a))
+
+      assert %T{data: %Expr{op: :constant, args: [0.7]}} = on_true
+    end
+
+    test "upcast float constants taken as values rather than operands" do
+      t_f64 = Nx.tensor([2, 2], type: :f64) |> Expr.tensor()
+      pred = Nx.tensor([1, 0], type: :u8) |> Expr.tensor()
+      c_f32 = Expr.constant(Nx.tensor(0.7, type: :f32), 0.7, [])
+      c_f64 = Expr.constant(Nx.tensor(0.7, type: :f64), 0.7, [])
+      nine_f32 = Expr.constant(Nx.tensor(9.0, type: :f32), 9.0, [])
+      nine_f64 = Expr.constant(Nx.tensor(9.0, type: :f64), 9.0, [])
+
+      assert %T{type: {:f, 64}, data: %Expr{op: :select, args: [^pred, ^c_f64, ^t_f64]}} =
+               Nx.select(pred, c_f32, t_f64)
+
+      assert %T{type: {:f, 64}, data: %Expr{op: :clip, args: [^t_f64, ^c_f64, ^nine_f64]}} =
+               Nx.clip(t_f64, c_f32, nine_f32)
+
+      assert %T{type: {:f, 64}, data: %Expr{op: :pad, args: [^t_f64, ^c_f64, _]}} =
+               Nx.pad(t_f64, c_f32, [{0, 1, 0}])
+
+      c_c64 = Expr.constant(Nx.tensor(0.7, type: :c64), 0.7, [])
+      t_c64 = Nx.tensor([2, 2], type: :c64) |> Expr.tensor()
+
+      assert %T{type: {:c, 64}, data: %Expr{op: :select, args: [^pred, ^c_c64, ^t_c64]}} =
+               Nx.select(pred, c_f32, t_c64)
+    end
+
+    test "upcast float constants passed in a list of tensors" do
+      t_f64 = Nx.tensor(2, type: :f64) |> Expr.tensor()
+      c_f32 = Expr.constant(Nx.tensor(0.7, type: :f32), 0.7, [])
+      c_f64 = Expr.constant(Nx.tensor(0.7, type: :f64), 0.7, [])
+
+      assert %T{type: {:f, 64}, data: %Expr{op: :stack, args: [[_, ^c_f64], _]}} =
+               Nx.stack([t_f64, c_f32])
+    end
+
+    test "upcast float constants for ops that answer in u8" do
+      t_f64 = Nx.tensor([2, 2], type: :f64) |> Expr.tensor()
+      c_f32 = Expr.constant(Nx.tensor(0.7, type: :f32), 0.7, [])
+      c_f64 = Expr.constant(Nx.tensor(0.7, type: :f64), 0.7, [])
+
+      for op <- [:equal, :not_equal, :less, :less_equal, :greater, :greater_equal] do
+        assert %T{type: {:u, 8}, data: %Expr{op: ^op, args: [^t_f64, ^c_f64]}} =
+                 apply(Nx, op, [t_f64, c_f32])
+      end
+
+      # the operands decide the precision, so a narrow operand keeps it narrow
+      t_f16 = Nx.tensor([2, 2], type: :f16) |> Expr.tensor()
+      c_f16 = Expr.constant(Nx.tensor(0.7, type: :f16), 0.7, [])
+      c2_f32 = Expr.constant(Nx.tensor(0.7, type: :f32), 0.7, [])
+
+      assert %T{type: {:u, 8}, data: %Expr{op: :less_equal, args: [^t_f16, ^c_f16]}} =
+               Nx.less_equal(t_f16, c2_f32)
+    end
   end
 
   describe "inspect" do
