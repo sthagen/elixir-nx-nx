@@ -3,7 +3,7 @@ defmodule Nx.Defn.GradTest do
 
   import Nx.Defn
   import Nx.Helpers
-  import Nx.Testing, only: [assert_equal: 2]
+  import Nx.Testing
   import Nx, only: :sigils
 
   @iters 1..25
@@ -2085,7 +2085,7 @@ defmodule Nx.Defn.GradTest do
   end
 
   for fun <-
-        [:cbrt, :cos, :exp, :expm1, :log, :log1p, :sigmoid] ++
+        [:cbrt, :cos, :exp, :expm1, :log, :log1p] ++
           [:mean, :negate, :rsqrt, :sin, :sqrt, :sum, :tanh] do
     describe "#{fun}" do
       grad_fun = :"grad_#{fun}"
@@ -2110,6 +2110,42 @@ defmodule Nx.Defn.GradTest do
           t = random_uniform(0.1, 10.0, type: {:c, 128})
           check_grads!(&Nx.unquote(fun)(&1), &(__MODULE__.unquote(grad_fun) / 1), t)
         end
+      end
+    end
+  end
+
+  describe "sigmoid" do
+    defn grad_sigmoid(t), do: grad(t, &Nx.sigmoid/1)
+    defn grad_x_times_sigmoid(t), do: grad(t, &Nx.sum(&1 * Nx.sigmoid(&1)))
+
+    test "computes gradient" do
+      for _ <- @iters, type <- @types do
+        t = random_uniform(0.1, 10.0, type: type)
+        check_grads!(&Nx.sigmoid/1, &grad_sigmoid/1, t)
+      end
+    end
+
+    test "is finite at the extremes of each float type" do
+      for type <- [{:f, 16}, {:bf, 16}, {:f, 32}, {:f, 64}] do
+        t =
+          Nx.stack([
+            Nx.Constants.neg_infinity(type),
+            Nx.Constants.min_finite(type),
+            Nx.tensor(-100.0, type: type),
+            Nx.Constants.max_finite(type),
+            Nx.Constants.infinity(type)
+          ])
+
+        assert_all_close(grad_sigmoid(t), Nx.tensor([0.0, 0.0, 0.0, 0.0, 0.0], type: type))
+
+        t =
+          Nx.stack([
+            Nx.Constants.min_finite(type),
+            Nx.tensor(-100.0, type: type),
+            Nx.Constants.max_finite(type)
+          ])
+
+        assert_all_close(grad_x_times_sigmoid(t), Nx.tensor([0.0, 0.0, 1.0], type: type))
       end
     end
   end
@@ -6136,6 +6172,11 @@ defmodule Nx.Defn.GradTest do
       assert grad_y.vectorized_axes == [batch: 2]
     end
 
+    test "finite difference of a vectorized cosine" do
+      x = Nx.tensor([[0.4, -0.7], [1.1, 0.2]], type: :f64) |> Nx.vectorize(:batch)
+      check_grads!(fn x -> Nx.sum(Nx.cos(x)) end, x, step: 1.0e-7, atol: 1.0e-4, rtol: 1.0e-4)
+    end
+
     test "large vectorized batch" do
       x = Nx.iota({64, 4}, type: :f32) |> Nx.divide(256) |> Nx.add(0.1) |> Nx.vectorize(:batch)
 
@@ -6666,6 +6707,42 @@ defmodule Nx.Defn.GradTest do
           Nx.sum(Nx.window_reduce(t, a, {2}, fn x, acc -> Nx.max(x, acc) end))
         end)
       end
+    end
+  end
+
+  describe "finite differences" do
+    test "broadcast" do
+      x = Nx.tensor([0.5, -1.0, 1.5], type: :f64)
+      y = Nx.tensor([[1.0, 2.0, 3.0], [0.5, -0.5, 1.0]], type: :f64)
+
+      check_grads!(
+        fn x ->
+          x |> Nx.reshape({1, 3}) |> Nx.multiply(y) |> Nx.sum()
+        end,
+        x
+      )
+    end
+
+    test "reductions" do
+      x = Nx.tensor([[0.5, 1.5], [0.25, 0.75]], type: :f64)
+      check_grads!(fn x -> Nx.sum(Nx.pow(x, 2)) end, x)
+      check_grads!(fn x -> Nx.product(Nx.add(x, 1)) end, x)
+    end
+
+    test "composition" do
+      x = Nx.tensor([0.2, -0.4, 0.6], type: :f64)
+
+      check_grads!(
+        fn x ->
+          x |> Nx.multiply(0.25) |> Nx.exp() |> Nx.sin() |> Nx.sum()
+        end,
+        x
+      )
+    end
+
+    test "matrix product" do
+      x = Nx.tensor([[0.5, -0.2], [0.3, 0.8]], type: :f64)
+      check_grads!(fn x -> Nx.sum(Nx.dot(x, Nx.transpose(x))) end, x)
     end
   end
 end

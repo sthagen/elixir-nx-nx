@@ -1,7 +1,7 @@
 defmodule NxTest do
   use ExUnit.Case, async: true
 
-  import Nx.Helpers
+  import Nx.Testing
   import Nx, only: :sigils
 
   defp commute(a, b, fun) do
@@ -485,6 +485,35 @@ defmodule NxTest do
                  [2.0, 4.0, 2.0, 2.0, 5.0, 2.0, 2.0, 6.0, 2.0, 2.0, 2.0],
                  [2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
                ])
+    end
+
+    test "with a pad value of a wider type" do
+      pad_value = Nx.tensor(0.5, type: :f64)
+
+      for type <- [f: 8, f8_e4m3fn: 8, f: 16, bf: 16, f: 32, f: 64] do
+        t = Nx.tensor([1.0, 2.0], type: type)
+        assert Nx.pad(t, pad_value, [{1, 0, 0}]) == Nx.tensor([0.5, 1.0, 2.0], type: :f64)
+      end
+
+      for kind <- [:s, :u], width <- [2, 4, 8, 16, 32, 64] do
+        t = Nx.tensor([0, 1], type: {kind, width})
+        assert Nx.pad(t, 0.5, [{1, 0, 0}]) == Nx.tensor([0.5, 0.0, 1.0])
+      end
+
+      t1 = Nx.tensor(1)
+      assert Nx.pad(t1, 0.5, []) == Nx.tensor(1.0)
+
+      t2 = Nx.tensor([[1, 2], [3, 4]])
+
+      assert Nx.pad(t2, 0.5, [{1, 0, 0}, {0, 1, 1}]) ==
+               Nx.tensor([
+                 [0.5, 0.5, 0.5, 0.5],
+                 [1.0, 0.5, 2.0, 0.5],
+                 [3.0, 0.5, 4.0, 0.5]
+               ])
+
+      t3 = Nx.tensor([1, 2], type: :u8)
+      assert Nx.pad(t3, -1, [{1, 1, 0}]) == Nx.tensor([-1, 1, 2, -1], type: :s16)
     end
   end
 
@@ -1160,6 +1189,22 @@ defmodule NxTest do
     test "with mixed types and sizes" do
       assert Nx.put_slice(Nx.tensor([0.0, 0.0]), [0], Nx.tensor([1])) == Nx.tensor([1.0, 0.0])
     end
+
+    test "start indices length reports the shape and the indices" do
+      assert_raise ArgumentError,
+                   ~r/start indices for put_slice of shape \{2, 3\}.*got: \[0\]/,
+                   fn ->
+                     Nx.put_slice(Nx.iota({2, 3}), [0], Nx.iota({1, 1}))
+                   end
+    end
+
+    test "slice rank mismatch reports both shapes" do
+      assert_raise ArgumentError,
+                   ~r/slice shape \{3\}.*shape \{2, 3\}/,
+                   fn ->
+                     Nx.put_slice(Nx.iota({2, 3}), [0, 0], Nx.iota({3}))
+                   end
+    end
   end
 
   describe "access" do
@@ -1464,6 +1509,14 @@ defmodule NxTest do
       assert Nx.broadcast(t, {2, 2}, names: [:x, :y]) ==
                Nx.tensor([[1, 2], [3, 4]], names: [:x, :y])
     end
+
+    test "axes length mismatch reports both shapes and the axes" do
+      assert_raise ArgumentError,
+                   ~r/axes \[0\].*shape \{2, 2\}.*broadcasting to \{2, 2, 2\}/,
+                   fn ->
+                     Nx.broadcast(Nx.iota({2, 2}), {2, 2, 2}, axes: [0])
+                   end
+    end
   end
 
   describe "tensor/2" do
@@ -1740,6 +1793,12 @@ defmodule NxTest do
                  :nan,
                  :nan
                ])
+    end
+
+    test "reduces across trailing contiguous axes" do
+      t = Nx.iota({2, 3, 4})
+      assert_equal(Nx.reduce_max(t, axes: [2]), Nx.tensor([[3, 7, 11], [15, 19, 23]]))
+      assert_equal(Nx.reduce_max(t, axes: [1, 2]), Nx.tensor([11, 23]))
     end
   end
 
@@ -2310,6 +2369,20 @@ defmodule NxTest do
     test "works with infinities" do
       t = Nx.tensor([1.0, 2.0, 3.0])
       assert t == Nx.clip(t, Nx.Constants.neg_infinity(), Nx.Constants.infinity())
+    end
+
+    test "propagates NaN from any argument" do
+      nan = Nx.Constants.nan()
+
+      assert Nx.clip(Nx.tensor([:nan, 1.0, 5.0]), 0.0, 2.0) == Nx.tensor([:nan, 1.0, 2.0])
+      assert Nx.clip(Nx.tensor(1.0), nan, 2.0) == nan
+      assert Nx.clip(Nx.tensor(1.0), 0.0, nan) == nan
+    end
+  end
+
+  describe "sign/1" do
+    test "returns NaN for NaN" do
+      assert Nx.sign(Nx.tensor([:nan, -2.0, 0.0, 2.0])) == Nx.tensor([:nan, -1.0, 0.0, 1.0])
     end
   end
 
@@ -3663,6 +3736,32 @@ defmodule NxTest do
       t = Nx.tensor(3.14, type: :f64)
       result = Nx.slice(t, [], [])
       assert_in_delta Nx.to_number(result), 3.14, 1.0e-10
+    end
+  end
+
+  describe "slice shape errors" do
+    test "start indices length reports the shape and the indices" do
+      assert_raise ArgumentError,
+                   ~r/start indices for slice of shape \{2, 3\}.*got: \[0\]/,
+                   fn ->
+                     Nx.slice(Nx.iota({2, 3}), [0], [1, 1])
+                   end
+    end
+
+    test "lengths list reports the shape and the lengths" do
+      assert_raise ArgumentError,
+                   ~r/lengths for slice of shape \{2, 3\}.*got: \[1\]/,
+                   fn ->
+                     Nx.slice(Nx.iota({2, 3}), [0, 0], [1])
+                   end
+    end
+
+    test "strides list reports the shape and the strides" do
+      assert_raise ArgumentError,
+                   ~r/strides for slice of shape \{2, 3\}.*got: \[1\]/,
+                   fn ->
+                     Nx.slice(Nx.iota({2, 3}), [0, 0], [1, 1], strides: [1])
+                   end
     end
   end
 end

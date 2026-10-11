@@ -1,7 +1,7 @@
 defmodule Nx.LinAlgTest do
   use ExUnit.Case, async: true
 
-  import Nx.Helpers
+  import Nx.Testing
   import Nx, only: :sigils
 
   doctest Nx.LinAlg
@@ -495,6 +495,20 @@ defmodule Nx.LinAlgTest do
       assert_all_close(r, expected_r, atol: 1.0e-6)
     end
 
+    test "factors wide and rank-deficient f16 matrices" do
+      # A column with no entries below the diagonal has a zero norm in the
+      # Householder step. The default eps must stay representable in f16
+      # for that guard to work, otherwise the reflector divides by zero.
+      for t <- [
+            Nx.iota({3, 4}, type: :f16),
+            Nx.tensor([[1, 0, 2], [3, 0, 4], [5, 0, 6]], type: :f16)
+          ] do
+        {q, r} = Nx.LinAlg.qr(t)
+        assert q.type == {:f, 16}
+        assert_all_close(Nx.dot(q, r), t, atol: 2.0e-2)
+      end
+    end
+
     test "works with complex matrix" do
       t = ~MAT[
         1 0 1i
@@ -774,7 +788,7 @@ defmodule Nx.LinAlgTest do
 
           # Eigenvalues and eigenvectors
           assert {evals, evecs} = Nx.LinAlg.eigh(a)
-          assert_all_close(evals_test, evals, atol: 0.1)
+          assert_all_close(Nx.broadcast(evals_test, Nx.shape(evals)), evals, atol: 0.1)
 
           # Eigenvalue equation
           evecs_evals = Nx.multiply(evecs, evals)
@@ -1080,6 +1094,41 @@ defmodule Nx.LinAlgTest do
 
           key
       end
+    end
+
+    test "supports multiple batch dimensions of differing sizes" do
+      # The zero-branch shape was built from a reversed dimension list and
+      # never re-reversed, so unequal batch dims came out transposed.
+      key = Nx.Random.key(7)
+
+      for shape <- [{3, 2, 2, 2}, {5, 4, 2, 3}], reduce: key do
+        key ->
+          {t, key} = Nx.Random.uniform(key, -1, 1, shape: shape, type: :f64)
+
+          rank = tuple_size(shape)
+          {rows, cols} = {elem(shape, rank - 2), elem(shape, rank - 1)}
+          batch_axes = Enum.to_list(0..(rank - 3))
+
+          pinv = Nx.LinAlg.pinv(t)
+
+          assert Nx.shape(pinv) ==
+                   shape |> put_elem(rank - 2, cols) |> put_elem(rank - 1, rows)
+
+          apa =
+            t
+            |> Nx.dot([rank - 1], batch_axes, pinv, [rank - 2], batch_axes)
+            |> Nx.dot([rank - 1], batch_axes, t, [rank - 2], batch_axes)
+
+          assert_all_close(apa, t, atol: 1.0e-3)
+
+          key
+      end
+    end
+
+    test "supports multiple batch dimensions for the all-zeros branch" do
+      zeros = Nx.broadcast(0.0, {3, 2, 1, 2})
+      assert Nx.shape(Nx.LinAlg.pinv(zeros)) == {3, 2, 2, 1}
+      assert Nx.to_flat_list(Nx.LinAlg.pinv(zeros)) |> Enum.all?(&(&1 == 0.0))
     end
 
     test "supports batched input" do

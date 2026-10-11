@@ -320,10 +320,11 @@ defmodule Nx.BinaryBackend do
 
   ## Pad
 
-  # We ignore the out because we need to recur over the shape
-  # as we transpose and build the rest.
+  # The result is built by padding the last axis and transposing, one axis
+  # at a time, so only the type is used from out.
   @impl true
   def pad(out, t, pad_value, padding_config) do
+    t = as_type(%{t | type: out.type}, t)
     pad_value = %{pad_value | type: out.type} |> as_type(pad_value) |> to_binary()
 
     case t.shape do
@@ -928,20 +929,38 @@ defmodule Nx.BinaryBackend do
   end
 
   @impl true
-  def ceil(out, tensor), do: element_wise_unary_op(out, tensor, &:math.ceil/1)
+  def ceil(out, tensor) do
+    element_wise_unary_op(out, tensor, fn
+      x when is_number(x) -> :math.ceil(x)
+      x -> x
+    end)
+  end
 
   @impl true
-  def floor(out, tensor), do: element_wise_unary_op(out, tensor, &:math.floor/1)
+  def floor(out, tensor) do
+    element_wise_unary_op(out, tensor, fn
+      x when is_number(x) -> :math.floor(x)
+      x -> x
+    end)
+  end
 
   @impl true
   def negate(out, tensor), do: element_wise_unary_op(out, tensor, &Complex.negate/1)
 
   @impl true
-  def round(out, tensor), do: element_wise_unary_op(out, tensor, &:erlang.round/1)
+  def round(out, tensor) do
+    element_wise_unary_op(out, tensor, fn
+      x when is_number(x) -> :erlang.round(x)
+      x -> x
+    end)
+  end
 
   @impl true
   def sign(out, tensor), do: element_wise_unary_op(out, tensor, &element_sign/1)
 
+  defp element_sign(:nan), do: :nan
+  defp element_sign(:infinity), do: 1
+  defp element_sign(:neg_infinity), do: -1
   defp element_sign(n) when n < 0, do: -1
   defp element_sign(n) when n > 0, do: 1
   defp element_sign(n), do: n
@@ -1790,22 +1809,9 @@ defmodule Nx.BinaryBackend do
     min = binary_to_number(to_binary(min), min.type)
     max = binary_to_number(to_binary(max), max.type)
 
-    comparison_fn = fn x ->
-      clipped_min =
-        if element_greater(nil, x, min) == 1 do
-          x
-        else
-          min
-        end
+    clip_fn = fn x -> element_min(nil, element_max(nil, x, min), max) end
 
-      if element_less(nil, clipped_min, max) == 1 do
-        clipped_min
-      else
-        max
-      end
-    end
-
-    out_data = binary_to_binary(in_data, tensor.type, out.type, comparison_fn)
+    out_data = binary_to_binary(in_data, tensor.type, out.type, clip_fn)
     from_binary(out, out_data)
   end
 
@@ -2493,7 +2499,15 @@ defmodule Nx.BinaryBackend do
     {reverse_pos, read_size} =
       aggregate_read(reverse_pos, tuple_size(shape) - 1, Enum.reverse(axes), size)
 
-    path = Enum.reverse(reverse_pre, [(&:erlang.list_to_bitstring/1) | Enum.reverse(reverse_pos)])
+    path =
+      case reverse_pos do
+        [] ->
+          Enum.reverse(reverse_pre)
+
+        _ ->
+          Enum.reverse(reverse_pre, [(&:erlang.list_to_bitstring/1) | Enum.reverse(reverse_pos)])
+      end
+
     {chunk_size, read_size, path}
   end
 
@@ -2505,10 +2519,10 @@ defmodule Nx.BinaryBackend do
 
   defp aggregate_path([], [], _i, pre, pos), do: {pre, pos}
 
-  defp aggregate_read([{axis, weight} | shape], i, [i | axis], _size),
-    do: aggregate_read(shape, i - 1, axis, axis * weight)
+  defp aggregate_read([{dim, weight} | shape], i, [i | axes], _size),
+    do: aggregate_read(shape, i - 1, axes, dim * weight)
 
-  defp aggregate_read(shape, _i, _axis, size),
+  defp aggregate_read(shape, _i, _axes, size),
     do: {shape, size}
 
   ## Weighted shapes

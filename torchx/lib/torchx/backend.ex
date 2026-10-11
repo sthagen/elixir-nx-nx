@@ -1047,6 +1047,7 @@ defmodule Torchx.Backend do
     {Nx.as_type(left, type), Nx.as_type(right, type)}
   end
 
+  # false keeps a view of the input. The op allocates its own result.
   defp maybe_broadcast_bin_args(out_shape, l, r) do
     l_tx =
       case l.shape do
@@ -1054,13 +1055,13 @@ defmodule Torchx.Backend do
           from_nx(l)
 
         _ ->
-          l |> from_nx() |> Torchx.broadcast_to(out_shape)
+          l |> from_nx() |> Torchx.broadcast_to(out_shape, false)
       end
 
     r_tx =
       case r.shape do
         ^out_shape -> from_nx(r)
-        _ -> r |> from_nx() |> Torchx.broadcast_to(out_shape)
+        _ -> r |> from_nx() |> Torchx.broadcast_to(out_shape, false)
       end
 
     {l_tx, r_tx}
@@ -1365,11 +1366,12 @@ defmodule Torchx.Backend do
 
   @impl true
   def pad(out, tensor, constant, input_config) do
+    tensor_tx = tensor |> from_nx() |> to_typed_ref(tensor.type, out.type)
+    constant_tx = constant |> from_nx() |> to_typed_ref(constant.type, out.type)
+
     # Handle empty padding config (no-op)
     if input_config == [] do
-      tensor
-      |> from_nx()
-      |> to_nx(out)
+      to_nx(tensor_tx, out)
     else
       config =
         input_config
@@ -1383,11 +1385,10 @@ defmodule Torchx.Backend do
         |> Enum.reverse()
         |> List.flatten()
 
-      tensor
-      |> from_nx()
+      tensor_tx
       |> pad_internal(input_config)
       |> slice_negative_padding(input_config)
-      |> Torchx.pad(from_nx(constant), config)
+      |> Torchx.pad(constant_tx, config)
       |> to_nx(out)
     end
   end

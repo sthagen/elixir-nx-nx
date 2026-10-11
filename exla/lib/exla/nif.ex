@@ -10,14 +10,24 @@ defmodule EXLA.NIF do
         :ok
 
       {:error, {reason, text}} ->
-        raise """
-        Failed to load NIF library.
-        Follow the steps in the :exla README Troubleshooting section for more information.
-
-        #{inspect(reason)}
-        #{text}
-        """
+        raise load_error(path, reason, text)
     end
+  end
+
+  def load_error(path, reason, text) do
+    target = System.get_env("XLA_TARGET") || "unset"
+
+    """
+    Failed to load NIF library.
+    Follow the steps in the :exla README Troubleshooting section for more information.
+
+    path: #{path}
+    architecture: #{:erlang.system_info(:system_architecture)}
+    XLA_TARGET: #{target}
+
+    #{inspect(reason)}
+    #{text}
+    """
   end
 
   def mlir_new_thread_pool(_concurrency), do: err!()
@@ -89,6 +99,9 @@ defmodule EXLA.NIF do
   def run_io(_executable, _arguments, _device_id, _callback_server_pid), do: err!()
   def serialize_executable(_executable), do: err!()
   def deserialize_executable(_client, _string), do: err!()
+  def get_compiled_memory_stats(_executable), do: err!()
+  def get_optimized_hlo(_executable), do: err!()
+  def get_cost_analysis(_executable), do: err!()
   def start_log_sink(_sink_pid), do: err!()
   def get_allocated_memory(_client), do: err!()
   def get_peak_memory(_client), do: err!()
